@@ -61,6 +61,10 @@ class _SheetDbTable {
         entry[header] = _SheetDbValueCodec.decode(row[colIndex]);
       });
 
+      if (!entry._id) {
+        this._applyInsertMetadata(entry);
+      }
+
       if (!entry._runtime) {
         entry._runtime = {};
       }
@@ -132,6 +136,8 @@ class _SheetDbTable {
       this.sheet
         .getRange(this.sheet.getLastRow() + 1, 1, rows.length, rows[0].length)
         .setValues(rows);
+
+      SpreadsheetApp.flush();
     });
   }
 
@@ -188,6 +194,8 @@ class _SheetDbTable {
           .getRange(rowNumber, 1, 1, updatedRow.length)
           .setValues([updatedRow]);
       }
+
+      SpreadsheetApp.flush();
     });
   }
 
