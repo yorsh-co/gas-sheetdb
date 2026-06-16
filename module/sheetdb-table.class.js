@@ -123,7 +123,7 @@ class _SheetDbTable {
 
   /**
    * Update a single entry.
-   * Requires `_id` and `_runtime.rowNumber`.
+   * Requires `_id`.
    *
    * @param {object} entry
    */
@@ -168,6 +168,58 @@ class _SheetDbTable {
 
         data[rowIndex] = this._buildRow(entry, data[rowIndex]);
       }
+
+      this._setTableBodyData(data);
+    });
+  }
+
+  // =========================
+  // DELETE
+  // =========================
+
+  /**
+   * Delete a single entry.
+   * Requires `_id`.
+   *
+   * @param {object} entry
+   */
+  delete(entry) {
+    this.deleteMany([entry]);
+  }
+
+  /**
+   * Delete multiple existing entries.
+   * Requires `_id` for each entry.
+   *
+   * @param {object[]} entries
+   */
+  deleteMany(entries) {
+    this._withLock(() => {
+      // load the current data after schema reload
+      const data = this._getTableBodyData();
+
+      // map the row indexes
+      const rowIndexesById = this._mapTableBodyRowIndexesById(data);
+
+      const entriesRowIndexes = [];
+      for (const entry of entries) {
+        if (!entry._id) {
+          throw new Error('Cannot update entry without "_id"');
+        }
+
+        const rowIndex = rowIndexesById.get(entry._id);
+
+        if (rowIndex === undefined) {
+          throw new Error(`Entry not found: ${entry._id}`);
+        }
+
+        entriesRowIndexes.push(rowIndex);
+      }
+
+      // sort in reverse order to delete from the bottom up
+      entriesRowIndexes.sort((a, b) => b - a);
+
+      entriesRowIndexes.forEach((rowIndex) => data.splice(rowIndex, 1));
 
       this._setTableBodyData(data);
     });
@@ -225,8 +277,6 @@ class _SheetDbTable {
    * @param {*[][]} data
    */
   _setTableBodyData(data) {
-    this._removeExtraRows(data.length);
-
     const tableBodyRange = this.sheet.getRange(
       this.rowNumbers.firstData,
       1,
@@ -235,6 +285,8 @@ class _SheetDbTable {
     );
 
     tableBodyRange.setValues(data);
+
+    this._removeExtraRows(data.length);
 
     SpreadsheetApp.flush();
   }

@@ -8,7 +8,7 @@
 
 `gas-sheetdb` uses Apps Script's `SpreadsheetApp` to turn sheets in a Google Spreadsheet into tables that store object entries as rows.
 
-Entries can be queried and updated through the `SheetDb` API using methods like `find`, `insert`, and `update`.
+Entries can be queried and updated through `SheetDb` using methods like `find`, `insert`, `update` and `delete`.
 
 > **Disclaimer:**
 > This project and [Yorsh](https://github.com/yorsh-co) are independent and are not affiliated with, endorsed by, or associated with Google LLC.
@@ -17,7 +17,7 @@ Entries can be queried and updated through the `SheetDb` API using methods like 
 
 - Store object entries as rows in sheets
 - Query entries using methods like find, findWhere, and findOneWhere
-- Insert and update entries using plain JavaScript objects
+- Insert, update and delete entries using plain JavaScript objects
 - Automatically creates missing columns when new properties appear during inserts or updates
 - Automatically adds `_id`, `_createdAt`, and `_updatedAt` fields to new entries
 - Objects and arrays are JSON serialized
@@ -30,23 +30,28 @@ Entries can be queried and updated through the `SheetDb` API using methods like 
 
 ```js
 // Create a new user
-const users = SheetDb.table(SHEETDB_SHEET_NAMES.USERS);
+const usersTable = SheetDb.table(SHEETDB_SHEET_NAMES.USERS);
 
-users.insert({
+usersTable.insert({
   name: 'John',
   role: 'admin',
   permissions: ['users:read', 'users:write'],
 });
 
 // Filter users
-const admins = users.findWhere((user) => user.role === 'admin');
+const admins = usersTable.findWhere((user) => user.role === 'admin');
 
 // Update users
 admins.forEach((admin) => {
   admin.lastSeenAt = new Date();
 });
 
-users.updateMany(admins);
+usersTable.updateMany(admins);
+
+// Delete users
+const revoked = usersTable.findWhere((user) => user.access === 'revoked');
+
+usersTable.deleteMany(revoked);
 ```
 
 ## Requirements
@@ -354,6 +359,30 @@ users.forEach((user) => {
 usersTable.updateMany(users);
 ```
 
+### Delete an Entry
+
+> **Note:**
+> The `delete` and `deleteMany` methods currently only accepts entries that were returned from the `find`, `findWhere` or `findOneWhere`. Deleting entries without the original `_id` property included the payload is not currently supported.
+
+```js
+const user = usersTable.findOneWhere(
+  (entry) => entry.email === 'john@email.com',
+);
+
+usersTable.delete(user);
+```
+
+### Delete Multiple Entries
+
+> **Note:**
+> The `delete` and `deleteMany` methods currently only accepts entries that were returned from the `find`, `findWhere` or `findOneWhere`. Deleting entries without the original `_id` property included the payload is not currently supported.
+
+```js
+const users = usersTable.findWhere((entry) => entry.access === 'revoked');
+
+usersTable.deleteMany(users);
+```
+
 ## Project Details
 
 ### Automatic Column Management
@@ -450,6 +479,13 @@ update(entry);
 updateMany(entries);
 ```
 
+Delete Methods:
+
+```js
+delete(entry);
+deleteMany(entries);
+```
+
 ### Example Workflow
 
 ```js
@@ -471,11 +507,16 @@ admins.forEach((admin) => {
 });
 
 users.updateMany(admins);
+
+// Delete users
+const revoked = usersTable.findWhere((user) => user.access === 'revoked');
+
+usersTable.deleteMany(revoked);
 ```
 
 ## Planned features
 
-- Support entry deletion
+- Catch entry failures
 - Support transactions
 - Support separate row configurations for different tables
 
