@@ -21,6 +21,7 @@ Entries can be queried and updated through the `SheetDb` API using methods like 
 - Automatically creates missing columns when new properties appear during inserts or updates
 - Automatically adds `_id`, `_createdAt`, and `_updatedAt` fields to new entries
 - Objects and arrays are JSON serialized
+- Accepts new entries inserted manually to the spreadsheet
 - Supports both bound and standalone spreadsheets
 - Uses Apps Script `LockService` for safer concurrent writes (full transactions are not yet supported)
 - No external dependencies beyond built-in Apps Script services
@@ -326,10 +327,12 @@ const user = usersTable.findOneWhere((entry) => entry._id === 'abc123');
 ### Update an Entry
 
 > **Note:**
-> The `update` and `updateMany` methods currently only accepts entries that were returned from the `find`, `findWhere` or `findOneWhere` and updated in runtime. Updating entries by a specific property such as `_id` is not currently supported.
+> The `update` and `updateMany` methods currently only accepts entries that were returned from the `find`, `findWhere` or `findOneWhere` and updated in runtime. Updating entries without the original `_id` property included the payload is not currently supported.
 
 ```js
-const user = usersTable.findOneWhere((entry) => entry._id === 'abc123');
+const user = usersTable.findOneWhere(
+  (entry) => entry.email === 'john@email.com',
+);
 
 user.active = false;
 
@@ -339,7 +342,7 @@ usersTable.update(user);
 ### Update Multiple Entries
 
 > **Note:**
-> The `update` and `updateMany` methods currently only accepts entries that were returned from the `find`, `findWhere` or `findOneWhere` and updated in runtime. Updating entries by a specific property such as `_id` is not currently supported.
+> The `update` and `updateMany` methods currently only accepts entries that were returned from the `find`, `findWhere` or `findOneWhere` and updated in runtime. Updating entries without the original `_id` property included the payload is not currently supported.
 
 ```js
 const users = usersTable.findWhere((entry) => entry.role === 'editor');
@@ -381,19 +384,11 @@ New entries automatically receive:
 }
 ```
 
-The `_updatedAt` field is refreshed whenever an entry is updated.
+### Manual inserts
 
-Entries returned from tables also include non-persistent runtime metadata:
+Entries can be added manually to the sheet table. Metadata will be applied automatically to manually-added entries when they are first read by `table.find()`.
 
-```js
-{
-  _runtime: {
-    rowNumber: 5,
-  },
-}
-```
-
-`_runtime.rowNumber` is used internally when updating rows and is not stored in the sheet.
+This is useful for importing data directly to the sheet from another source such as a file (.csv, .xlsx etc.) or via copy and paste.
 
 ### Encoded Values
 
@@ -481,7 +476,8 @@ users.updateMany(admins);
 ## Planned features
 
 - Support entry deletion
-- Support updating values by `_id` instead of relying on `_runtime.rowNumber`
+- Support transactions
+- Support separate row configurations for different tables
 
 ## License
 

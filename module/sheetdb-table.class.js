@@ -20,9 +20,7 @@ class _SheetDbTable {
     this.sheet = spreadsheet.getSheetByName(sheetName);
 
     if (!this.sheet) {
-      this.sheet = spreadsheet.insertSheet(sheetName);
-
-      Logger.log('[_SheetDbTable] Created missing sheet "%s"', sheetName);
+      this._insertSheet(sheetName);
     }
 
     this.schema = new _SheetDbTableSchema(this.sheet, this.rowNumbers);
@@ -39,38 +37,22 @@ class _SheetDbTable {
    * @returns {object[]}
    */
   find() {
-    const data = this.sheet.getDataRange().getValues();
-
-    if (!data.length) {
-      return [];
-    }
+    this._ensureRequiredMetadata();
 
     const headers = this.schema.headers;
 
-    const bodyOffset = this.rowIndexes.firstData;
-    const body = data.slice(bodyOffset);
+    const data = this._getTableBodyData();
 
     const entries = [];
 
-    for (let dataIndex = 0; dataIndex < body.length; dataIndex++) {
+    for (let dataIndex = 0; dataIndex < data.length; dataIndex++) {
       const entry = {};
 
-      const row = body[dataIndex];
+      const row = data[dataIndex];
 
       headers.forEach((header, colIndex) => {
         entry[header] = _SheetDbValueCodec.decode(row[colIndex]);
       });
-
-      if (!entry._id) {
-        this._applyInsertMetadata(entry);
-      }
-
-      if (!entry._runtime) {
-        entry._runtime = {};
-      }
-
-      entry._runtime.rowNumber =
-        dataIndex + bodyOffset + (this.rowNumbers.firstData - 1);
 
       entries.push(entry);
     }
@@ -129,15 +111,9 @@ class _SheetDbTable {
 
       this.schema.reload();
 
-      const rows = entries.map((entry) => this._buildRow(entry));
+      const data = entries.map((entry) => this._buildRow(entry));
 
-      this._ensureBlankRows(rows.length);
-
-      this.sheet
-        .getRange(this.sheet.getLastRow() + 1, 1, rows.length, rows[0].length)
-        .setValues(rows);
-
-      SpreadsheetApp.flush();
+      this._appendTableBodyData(data);
     });
   }
 
@@ -157,100 +133,195 @@ class _SheetDbTable {
 
   /**
    * Update multiple existing entries.
-   * Requires `_id` and `_runtime.rowNumber` for each entry.
+   * Requires `_id` for each entry.
    *
    * @param {object[]} entries
    */
   updateMany(entries) {
     this._withLock(() => {
+      // add new property columns
       this.schema.reload();
+
+      const headers = this._extractHeaders(entries);
+
+      this.schema.ensureColumns(headers);
+      this.schema.reload();
+
+      // load the current data after schema reload
+      const data = this._getTableBodyData();
+
+      // map the row indexes
+      const rowIndexesById = this._mapTableBodyRowIndexesById(data);
 
       for (const entry of entries) {
         if (!entry._id) {
           throw new Error('Cannot update entry without "_id"');
         }
 
-        this._applyUpdateMetadata(entry);
+        const rowIndex = rowIndexesById.get(entry._id);
 
-        const rowNumber = entry?._runtime?.rowNumber;
-
-        if (!rowNumber) {
-          throw new Error('Cannot update entry without "_runtime.rowNumber"');
+        if (rowIndex === undefined) {
+          throw new Error(`Entry not found: ${entry._id}`);
         }
 
-        const headers = this._extractHeaders([entry]);
+        this._applyUpdateMetadata(entry);
 
-        this.schema.ensureColumns(headers);
-
-        this.schema.reload();
-
-        const existingRow = this.sheet
-          .getRange(rowNumber, 1, 1, this.schema.headers.length)
-          .getValues()[0];
-
-        const updatedRow = this._buildRow(entry, existingRow);
-
-        this.sheet
-          .getRange(rowNumber, 1, 1, updatedRow.length)
-          .setValues([updatedRow]);
+        data[rowIndex] = this._buildRow(entry, data[rowIndex]);
       }
 
-      SpreadsheetApp.flush();
+      this._setTableBodyData(data);
     });
   }
 
   // =========================
-  // HELPERS
+  // SHEET HELPERS
+  // =========================
+  /**
+   *
+   * @param {string} sheetName
+   */
+  _insertSheet(sheetName) {
+    this.sheet = this.spreadsheet.insertSheet(sheetName);
+
+    const maxCols = this.sheet.getMaxColumns();
+
+    this.sheet
+      .getRange(this.rowNumbers.headers, 1, this.sheet.getMaxRows(), maxCols)
+      .applyRowBanding();
+
+    this.sheet
+      .getRange(this.rowNumbers.headers, 1, 1, maxCols)
+      .setFontWeight('bold');
+
+    this.sheet.setFrozenRows(this.rowNumbers.headers);
+
+    Logger.log('[SheetDb] Created missing sheet "%s"', sheetName);
+  }
+
+  // =========================
+  // TABLE BODY HELPERS
   // =========================
 
   /**
-   * Execute a callback inside a document lock.
+   * Return the table body, without the headers.
    *
-   * @param {Function} callback
-   * @returns {*}
+   * @returns {*[][]}
    */
-  _withLock(callback) {
-    const lock = LockService.getDocumentLock();
+  _getTableBodyData() {
+    const data = this.sheet.getDataRange().getValues();
 
-    lock.waitLock(30000);
+    if (!data.length) {
+      return [];
+    }
 
-    try {
-      return callback();
-    } finally {
-      lock.releaseLock();
+    const bodyOffset = this.rowIndexes.firstData;
+
+    return data.slice(bodyOffset);
+  }
+
+  /**
+   * Write to the entire table body on the sheet.
+   *
+   * @param {*[][]} data
+   */
+  _setTableBodyData(data) {
+    this._removeExtraRows(data.length);
+
+    const tableBodyRange = this.sheet.getRange(
+      this.rowNumbers.firstData,
+      1,
+      data.length,
+      data[0].length,
+    );
+
+    tableBodyRange.setValues(data);
+
+    SpreadsheetApp.flush();
+  }
+
+  /**
+   * Append rows to the sheet.
+   *
+   * @param {*[][]} data
+   */
+  _appendTableBodyData(data) {
+    if (!data.length) throw new Error('Empty data');
+
+    this._ensureBlankRows(data.length);
+
+    this.sheet
+      .getRange(this.sheet.getLastRow() + 1, 1, data.length, data[0].length)
+      .setValues(data);
+
+    SpreadsheetApp.flush();
+  }
+
+  /**
+   * Ensure the sheet has enough empty rows.
+   *
+   * @param {number} amount
+   */
+  _ensureBlankRows(amount) {
+    const maxRows = this.sheet.getMaxRows();
+
+    const lastRow = this.sheet.getLastRow();
+
+    const rowsNeeded = amount + lastRow - maxRows;
+
+    if (rowsNeeded > 0) {
+      this.sheet.insertRowsAfter(lastRow, rowsNeeded);
     }
   }
 
   /**
-   * Apply system fields for new entries.
+   * Remove extra rows from the sheet.
    *
-   * @param {object} entry
+   * @param {number} tableBodyLen
    */
-  _applyInsertMetadata(entry) {
-    const now = new Date();
+  _removeExtraRows(tableBodyLen) {
+    const lastTableBodyRow = this.rowNumbers.firstData - 1 + tableBodyLen;
 
-    const keys = SHEETDB_SYSTEM_FIELDS;
+    const maxRows = this.sheet.getMaxRows();
 
-    if (!entry[keys.ID]) {
-      entry[keys.ID] = Utilities.getUuid();
+    const numExtraRows = maxRows - lastTableBodyRow;
+
+    if (numExtraRows > 0) {
+      this.sheet.deleteRows(lastTableBodyRow + 1, numExtraRows);
     }
-
-    if (!entry[keys.CREATED_AT]) {
-      entry[keys.CREATED_AT] = now;
-    }
-
-    entry[keys.UPDATED_AT] = now;
   }
 
   /**
-   * Update system timestamps.
+   * Map the row indexes
    *
-   * @param {object} entry
+   * @param {*[][]} [tableBody=null]
+   * @returns {Map<string, number>}
    */
-  _applyUpdateMetadata(entry) {
-    const keys = SHEETDB_SYSTEM_FIELDS;
+  _mapTableBodyRowIndexesById(tableBody = null) {
+    const data = tableBody || this._getTableBodyData();
 
-    entry[keys.UPDATED_AT] = new Date();
+    const idColIndex = this._getColumnIndex(SHEETDB_SYSTEM_FIELDS.ID);
+
+    const rowMap = new Map();
+
+    for (let i = 0; i < data.length; i++) {
+      rowMap.set(data[i][idColIndex], i);
+    }
+
+    return rowMap;
+  }
+
+  // =========================
+  // TABLE COLUMN HELPERS
+  // =========================
+
+  /**
+   * Return the base-0 index for column corresponding to the provided key.
+   *
+   * @param {string} key
+   * @returns {number}
+   */
+  _getColumnIndex(key) {
+    return this.schema.headers.indexOf(key);
   }
 
   /**
@@ -268,6 +339,10 @@ class _SheetDbTable {
       ),
     ];
   }
+
+  // =========================
+  // TABLE ENTRY HELPERS
+  // =========================
 
   /**
    * Check if a field should be stored in the sheet.
@@ -300,19 +375,106 @@ class _SheetDbTable {
   }
 
   /**
-   * Ensure the sheet has enough empty rows.
-   *
-   * @param {number} amount
+   * Ensure in-sheet insert metadata for all entries.
+   * This ensures that entries inserted manually or by processes
+   * other than table.insert() contain the required metadata for
+   * reading and writing with SheetDB.
    */
-  _ensureBlankRows(amount) {
-    const maxRows = this.sheet.getMaxRows();
+  _ensureRequiredMetadata() {
+    this._withLock(() => {
+      this.schema.ensureColumns(Object.values(SHEETDB_SYSTEM_FIELDS));
+      this.schema.reload();
 
-    const lastRow = this.sheet.getLastRow();
+      const data = this._getTableBodyData();
 
-    const rowsNeeded = amount + lastRow - maxRows;
+      if (!data.length) return;
 
-    if (rowsNeeded > 0) {
-      this.sheet.insertRowsAfter(lastRow, rowsNeeded);
+      const idColIndex = this._getColumnIndex(SHEETDB_SYSTEM_FIELDS.ID);
+      const createdAtColIndex = this._getColumnIndex(
+        SHEETDB_SYSTEM_FIELDS.CREATED_AT,
+      );
+      const updatedAtColIndex = this._getColumnIndex(
+        SHEETDB_SYSTEM_FIELDS.UPDATED_AT,
+      );
+
+      const now = new Date();
+
+      for (let i = 0; i < data.length; i++) {
+        if (!data[i][idColIndex]) data[i][idColIndex] = this._generateId();
+
+        if (!data[i][createdAtColIndex]) data[i][createdAtColIndex] = now;
+
+        if (!data[i][updatedAtColIndex]) data[i][updatedAtColIndex] = now;
+      }
+
+      this._setTableBodyData(data);
+    });
+  }
+
+  // =========================
+  // METADATA HELPERS
+  // =========================
+
+  /**
+   * Apply system fields for new entries.
+   *
+   * @param {object} entry
+   */
+  _applyInsertMetadata(entry) {
+    const now = new Date();
+
+    const keys = SHEETDB_SYSTEM_FIELDS;
+
+    if (!entry[keys.ID]) {
+      entry[keys.ID] = this._generateId();
+    }
+
+    if (!entry[keys.CREATED_AT]) {
+      entry[keys.CREATED_AT] = now;
+    }
+
+    entry[keys.UPDATED_AT] = now;
+  }
+
+  /**
+   * Update system timestamps.
+   *
+   * @param {object} entry
+   */
+  _applyUpdateMetadata(entry) {
+    const keys = SHEETDB_SYSTEM_FIELDS;
+
+    entry[keys.UPDATED_AT] = new Date();
+  }
+
+  /**
+   * Return uuid.
+   *
+   * @returns {string}
+   */
+  _generateId() {
+    return Utilities.getUuid();
+  }
+
+  // =========================
+  // RUNTIME HELPERS
+  // =========================
+
+  /**
+   * Execute a callback inside a document lock.
+   *
+   * @param {Function} callback
+   * @returns {*}
+   */
+  _withLock(callback) {
+    const lock = LockService.getDocumentLock();
+
+    lock.waitLock(30000);
+
+    try {
+      return callback();
+    } finally {
+      lock.releaseLock();
     }
   }
 }
