@@ -276,15 +276,17 @@ class _SheetDbTable {
    *
    * @param {*[][]} data
    */
-  _setTableBodyData(data) {
-    const tableBodyRange = this.sheet.getRange(
-      this.rowNumbers.firstData,
-      1,
-      data.length,
-      data[0].length,
-    );
+  _setTableBodyData(data = []) {
+    if (data.length) {
+      const tableBodyRange = this.sheet.getRange(
+        this.rowNumbers.firstData,
+        1,
+        data.length,
+        data[0].length,
+      );
 
-    tableBodyRange.setValues(data);
+      tableBodyRange.setValues(data);
+    }
 
     this._removeExtraRows(data.length);
 
