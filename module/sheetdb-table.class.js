@@ -37,27 +37,29 @@ class _SheetDbTable {
    * @returns {object[]}
    */
   find() {
-    this._ensureRequiredMetadata();
+    this._withLock(() => {
+      this._ensureRequiredMetadata();
 
-    const headers = this.schema.headers;
+      const headers = this.schema.headers;
 
-    const data = this._getTableBodyData();
+      const data = this._getTableBodyData();
 
-    const entries = [];
+      const entries = [];
 
-    for (let dataIndex = 0; dataIndex < data.length; dataIndex++) {
-      const entry = {};
+      for (let dataIndex = 0; dataIndex < data.length; dataIndex++) {
+        const entry = {};
 
-      const row = data[dataIndex];
+        const row = data[dataIndex];
 
-      headers.forEach((header, colIndex) => {
-        entry[header] = _SheetDbValueCodec.decode(row[colIndex]);
-      });
+        headers.forEach((header, colIndex) => {
+          entry[header] = _SheetDbValueCodec.decode(row[colIndex]);
+        });
 
-      entries.push(entry);
-    }
+        entries.push(entry);
+      }
 
-    return entries;
+      return entries;
+    });
   }
 
   /**
@@ -435,34 +437,32 @@ class _SheetDbTable {
    * reading and writing with SheetDB.
    */
   _ensureRequiredMetadata() {
-    this._withLock(() => {
-      this.schema.ensureColumns(Object.values(SHEETDB_SYSTEM_FIELDS));
-      this.schema.reload();
+    this.schema.ensureColumns(Object.values(SHEETDB_SYSTEM_FIELDS));
+    this.schema.reload();
 
-      const data = this._getTableBodyData();
+    const data = this._getTableBodyData();
 
-      if (!data.length) return;
+    if (!data.length) return;
 
-      const idColIndex = this._getColumnIndex(SHEETDB_SYSTEM_FIELDS.ID);
-      const createdAtColIndex = this._getColumnIndex(
-        SHEETDB_SYSTEM_FIELDS.CREATED_AT,
-      );
-      const updatedAtColIndex = this._getColumnIndex(
-        SHEETDB_SYSTEM_FIELDS.UPDATED_AT,
-      );
+    const idColIndex = this._getColumnIndex(SHEETDB_SYSTEM_FIELDS.ID);
+    const createdAtColIndex = this._getColumnIndex(
+      SHEETDB_SYSTEM_FIELDS.CREATED_AT,
+    );
+    const updatedAtColIndex = this._getColumnIndex(
+      SHEETDB_SYSTEM_FIELDS.UPDATED_AT,
+    );
 
-      const now = new Date();
+    const now = new Date();
 
-      for (let i = 0; i < data.length; i++) {
-        if (!data[i][idColIndex]) data[i][idColIndex] = this._generateId();
+    for (let i = 0; i < data.length; i++) {
+      if (!data[i][idColIndex]) data[i][idColIndex] = this._generateId();
 
-        if (!data[i][createdAtColIndex]) data[i][createdAtColIndex] = now;
+      if (!data[i][createdAtColIndex]) data[i][createdAtColIndex] = now;
 
-        if (!data[i][updatedAtColIndex]) data[i][updatedAtColIndex] = now;
-      }
+      if (!data[i][updatedAtColIndex]) data[i][updatedAtColIndex] = now;
+    }
 
-      this._setTableBodyData(data);
-    });
+    this._setTableBodyData(data);
   }
 
   // =========================
