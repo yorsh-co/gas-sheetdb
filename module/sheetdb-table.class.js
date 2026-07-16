@@ -37,27 +37,29 @@ class _SheetDbTable {
    * @returns {object[]}
    */
   find() {
-    this._ensureRequiredMetadata();
+    this._withLock(() => {
+      this._ensureRequiredMetadata();
 
-    const headers = this.schema.headers;
+      const headers = this.schema.headers;
 
-    const data = this._getTableBodyData();
+      const data = this._getTableBodyData();
 
-    const entries = [];
+      const entries = [];
 
-    for (let dataIndex = 0; dataIndex < data.length; dataIndex++) {
-      const entry = {};
+      for (let dataIndex = 0; dataIndex < data.length; dataIndex++) {
+        const entry = {};
 
-      const row = data[dataIndex];
+        const row = data[dataIndex];
 
-      headers.forEach((header, colIndex) => {
-        entry[header] = _SheetDbValueCodec.decode(row[colIndex]);
-      });
+        headers.forEach((header, colIndex) => {
+          entry[header] = _SheetDbValueCodec.decode(row[colIndex]);
+        });
 
-      entries.push(entry);
-    }
+        entries.push(entry);
+      }
 
-    return entries;
+      return entries;
+    });
   }
 
   /**
@@ -97,7 +99,8 @@ class _SheetDbTable {
    * Insert multiple entries.
    * Missing columns are created automatically.
    *
-   * @param {object[]} entries
+   * @param {object[]} entries - Mutated in place: `_id`, `_createdAt`,
+   *   and `_updatedAt` are added if not already present.
    */
   insertMany(entries) {
     this._withLock(() => {
@@ -135,7 +138,8 @@ class _SheetDbTable {
    * Update multiple existing entries.
    * Requires `_id` for each entry.
    *
-   * @param {object[]} entries
+   * @param {object[]} entries - Mutated in place: `_updatedAt` is
+   *   overwritten with the current time.
    */
   updateMany(entries) {
     this._withLock(() => {
@@ -276,15 +280,17 @@ class _SheetDbTable {
    *
    * @param {*[][]} data
    */
-  _setTableBodyData(data) {
-    const tableBodyRange = this.sheet.getRange(
-      this.rowNumbers.firstData,
-      1,
-      data.length,
-      data[0].length,
-    );
+  _setTableBodyData(data = []) {
+    if (data.length) {
+      const tableBodyRange = this.sheet.getRange(
+        this.rowNumbers.firstData,
+        1,
+        data.length,
+        data[0].length,
+      );
 
-    tableBodyRange.setValues(data);
+      tableBodyRange.setValues(data);
+    }
 
     this._removeExtraRows(data.length);
 
@@ -352,6 +358,12 @@ class _SheetDbTable {
     const data = tableBody || this._getTableBodyData();
 
     const idColIndex = this._getColumnIndex(SHEETDB_SYSTEM_FIELDS.ID);
+
+    if (idColIndex === -1) {
+      throw new Error(
+        `Cannot map rows by "${SHEETDB_SYSTEM_FIELDS.ID}": column does not exist on sheet "${this.sheetName}". Call find() at least once before update/delete.`,
+      );
+    }
 
     const rowMap = new Map();
 
@@ -433,34 +445,32 @@ class _SheetDbTable {
    * reading and writing with SheetDB.
    */
   _ensureRequiredMetadata() {
-    this._withLock(() => {
-      this.schema.ensureColumns(Object.values(SHEETDB_SYSTEM_FIELDS));
-      this.schema.reload();
+    this.schema.ensureColumns(Object.values(SHEETDB_SYSTEM_FIELDS));
+    this.schema.reload();
 
-      const data = this._getTableBodyData();
+    const data = this._getTableBodyData();
 
-      if (!data.length) return;
+    if (!data.length) return;
 
-      const idColIndex = this._getColumnIndex(SHEETDB_SYSTEM_FIELDS.ID);
-      const createdAtColIndex = this._getColumnIndex(
-        SHEETDB_SYSTEM_FIELDS.CREATED_AT,
-      );
-      const updatedAtColIndex = this._getColumnIndex(
-        SHEETDB_SYSTEM_FIELDS.UPDATED_AT,
-      );
+    const idColIndex = this._getColumnIndex(SHEETDB_SYSTEM_FIELDS.ID);
+    const createdAtColIndex = this._getColumnIndex(
+      SHEETDB_SYSTEM_FIELDS.CREATED_AT,
+    );
+    const updatedAtColIndex = this._getColumnIndex(
+      SHEETDB_SYSTEM_FIELDS.UPDATED_AT,
+    );
 
-      const now = new Date();
+    const now = new Date();
 
-      for (let i = 0; i < data.length; i++) {
-        if (!data[i][idColIndex]) data[i][idColIndex] = this._generateId();
+    for (let i = 0; i < data.length; i++) {
+      if (!data[i][idColIndex]) data[i][idColIndex] = this._generateId();
 
-        if (!data[i][createdAtColIndex]) data[i][createdAtColIndex] = now;
+      if (!data[i][createdAtColIndex]) data[i][createdAtColIndex] = now;
 
-        if (!data[i][updatedAtColIndex]) data[i][updatedAtColIndex] = now;
-      }
+      if (!data[i][updatedAtColIndex]) data[i][updatedAtColIndex] = now;
+    }
 
-      this._setTableBodyData(data);
-    });
+    this._setTableBodyData(data);
   }
 
   // =========================

@@ -30,7 +30,7 @@ const SheetDb = (() => {
 
     if (!SHEETDB_SPREADSHEET_URL) {
       throw new Error(
-        'Required value "SHEETDB_SPREADSHEET_URL" is missing from "spreadsheet.config.js"',
+        'Required value "SHEETDB_SPREADSHEET_URL" is missing from "sheetdb.config.js"',
       );
     }
 

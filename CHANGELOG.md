@@ -6,6 +6,30 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ---
 
+## [0.1.1] - 2026-07-15
+
+### Fixed
+
+- `_setTableBodyData` no longer throws when writing an empty data set,
+  fixing a crash in `deleteMany` when it removes all remaining rows
+  from a table
+- `find()` now holds a single lock across metadata backfill and the
+  subsequent read, closing a race window where concurrent writers
+  could interleave between the two
+- `_mapTableBodyRowIndexesById` now throws a descriptive error instead
+  of silently mapping every row to an `undefined` key when the `_id`
+  column doesn't exist yet
+- Corrected the missing-`SHEETDB_SPREADSHEET_URL` error message to
+  reference the correct file, `sheetdb.config.js`
+
+### Documentation
+
+- Documented that `insert`/`insertMany`/`update`/`updateMany` mutate
+  passed-in entry objects in place (system fields written directly
+  onto the caller's objects), in both JSDoc and the README
+
+---
+
 ## [0.1.0] - 2026-06-16
 
 Initial public release of `gas-sheetdb`.

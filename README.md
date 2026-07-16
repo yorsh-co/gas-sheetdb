@@ -311,6 +311,9 @@ usersTable.insertMany([
 ]);
 ```
 
+> **Note:**
+> `insert` and `insertMany` mutate the entry objects passed in, adding `_id`, `_createdAt`, and `_updatedAt` in place.
+
 ### Read All Entries
 
 ```js
@@ -331,9 +334,6 @@ const user = usersTable.findOneWhere((entry) => entry._id === 'abc123');
 
 ### Update an Entry
 
-> **Note:**
-> The `update` and `updateMany` methods currently only accepts entries that were returned from the `find`, `findWhere` or `findOneWhere` and updated in runtime. Updating entries without the original `_id` property included the payload is not currently supported.
-
 ```js
 const user = usersTable.findOneWhere(
   (entry) => entry.email === 'john@email.com',
@@ -346,9 +346,6 @@ usersTable.update(user);
 
 ### Update Multiple Entries
 
-> **Note:**
-> The `update` and `updateMany` methods currently only accepts entries that were returned from the `find`, `findWhere` or `findOneWhere` and updated in runtime. Updating entries without the original `_id` property included the payload is not currently supported.
-
 ```js
 const users = usersTable.findWhere((entry) => entry.role === 'editor');
 
@@ -358,6 +355,11 @@ users.forEach((user) => {
 
 usersTable.updateMany(users);
 ```
+
+> **Note:**
+> The `update` and `updateMany` methods currently only accepts entries that were returned from the `find`, `findWhere` or `findOneWhere` and updated in runtime. Updating entries without the original `_id` property included the payload is not currently supported.
+>
+> Both methods mutate the entry objects passed in — `_updatedAt` is overwritten in place. If you need the pre-update value, copy it before calling `update`/`updateMany`.
 
 ### Delete an Entry
 
