@@ -37,7 +37,7 @@ class _SheetDbTable {
    * @returns {object[]}
    */
   find() {
-    this._withLock(() => {
+    return this._withLock(() => {
       this._ensureRequiredMetadata();
 
       const headers = this.schema.headers;
