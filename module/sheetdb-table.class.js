@@ -99,7 +99,8 @@ class _SheetDbTable {
    * Insert multiple entries.
    * Missing columns are created automatically.
    *
-   * @param {object[]} entries
+   * @param {object[]} entries - Mutated in place: `_id`, `_createdAt`,
+   *   and `_updatedAt` are added if not already present.
    */
   insertMany(entries) {
     this._withLock(() => {
@@ -137,7 +138,8 @@ class _SheetDbTable {
    * Update multiple existing entries.
    * Requires `_id` for each entry.
    *
-   * @param {object[]} entries
+   * @param {object[]} entries - Mutated in place: `_updatedAt` is
+   *   overwritten with the current time.
    */
   updateMany(entries) {
     this._withLock(() => {
