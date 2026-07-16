@@ -357,6 +357,12 @@ class _SheetDbTable {
 
     const idColIndex = this._getColumnIndex(SHEETDB_SYSTEM_FIELDS.ID);
 
+    if (idColIndex === -1) {
+      throw new Error(
+        `Cannot map rows by "${SHEETDB_SYSTEM_FIELDS.ID}": column does not exist on sheet "${this.sheetName}". Call find() at least once before update/delete.`,
+      );
+    }
+
     const rowMap = new Map();
 
     for (let i = 0; i < data.length; i++) {
