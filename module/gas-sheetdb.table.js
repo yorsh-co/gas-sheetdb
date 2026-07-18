@@ -415,11 +415,11 @@ class _GasSheetDbTable {
   _mapTableBodyRowIndexesById(tableBody = null) {
     const data = tableBody || this._getTableBodyData();
 
-    const idColIndex = this._getColumnIndex(SHEETDB_SYSTEM_FIELDS.ID);
+    const idColIndex = this._getColumnIndex(_GAS_SHEETDB_SYSTEM_FIELDS.ID);
 
     if (idColIndex === -1) {
       throw new Error(
-        `Cannot map rows by "${SHEETDB_SYSTEM_FIELDS.ID}": column does not exist on sheet "${this.sheetName}". Call find() at least once before update/delete.`,
+        `Cannot map rows by "${_GAS_SHEETDB_SYSTEM_FIELDS.ID}": column does not exist on sheet "${this.sheetName}". Call find() at least once before update/delete.`,
       );
     }
 
@@ -473,7 +473,7 @@ class _GasSheetDbTable {
    * @returns {boolean}
    */
   _isPersistedField(key) {
-    return !SHEETDB_NON_PERSISTED_FIELDS.has(key);
+    return !_GAS_SHEETDB_NON_PERSISTED_FIELDS.has(key);
   }
 
   /**
@@ -492,7 +492,7 @@ class _GasSheetDbTable {
         return existingRow[index] ?? '';
       }
 
-      return _SheetDbValueCodec.encode(value);
+      return _GasSheetDbValueCodec.encode(value);
     });
   }
 
@@ -503,19 +503,19 @@ class _GasSheetDbTable {
    * reading and writing with SheetDB.
    */
   _ensureRequiredMetadata() {
-    this.schema.ensureColumns(Object.values(SHEETDB_SYSTEM_FIELDS));
+    this.schema.ensureColumns(Object.values(_GAS_SHEETDB_SYSTEM_FIELDS));
     this.schema.reload();
 
     const data = this._getTableBodyData();
 
     if (!data.length) return;
 
-    const idColIndex = this._getColumnIndex(SHEETDB_SYSTEM_FIELDS.ID);
+    const idColIndex = this._getColumnIndex(_GAS_SHEETDB_SYSTEM_FIELDS.ID);
     const createdAtColIndex = this._getColumnIndex(
-      SHEETDB_SYSTEM_FIELDS.CREATED_AT,
+      _GAS_SHEETDB_SYSTEM_FIELDS.CREATED_AT,
     );
     const updatedAtColIndex = this._getColumnIndex(
-      SHEETDB_SYSTEM_FIELDS.UPDATED_AT,
+      _GAS_SHEETDB_SYSTEM_FIELDS.UPDATED_AT,
     );
 
     const now = new Date();
@@ -543,7 +543,7 @@ class _GasSheetDbTable {
   _applyInsertMetadata(entry) {
     const now = new Date();
 
-    const keys = SHEETDB_SYSTEM_FIELDS;
+    const keys = _GAS_SHEETDB_SYSTEM_FIELDS;
 
     if (!entry[keys.ID]) {
       entry[keys.ID] = this._generateId();
@@ -562,7 +562,7 @@ class _GasSheetDbTable {
    * @param {Object} entry
    */
   _applyUpdateMetadata(entry) {
-    const keys = SHEETDB_SYSTEM_FIELDS;
+    const keys = _GAS_SHEETDB_SYSTEM_FIELDS;
 
     entry[keys.UPDATED_AT] = new Date();
   }

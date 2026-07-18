@@ -4,7 +4,7 @@
  * Objects are serialized with a reserved prefix so they
  * can be restored when reading rows.
  */
-const _SheetDbValueCodec = (() => {
+const _GasSheetDbValueCodec = (() => {
   const PREFIXES = Object.freeze({
     JSON: '__JSON__',
   });
