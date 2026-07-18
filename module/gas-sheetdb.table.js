@@ -4,26 +4,109 @@
  * Provides object-based querying, inserts, updates,
  * automatic column management, and metadata handling.
  */
-class _SheetDbTable {
+class _GasSheetDbTable {
   /**
-   * @param {object} options
+   * @param {Object} options
    * @param {GoogleAppsScript.Spreadsheet.Spreadsheet} options.spreadsheet
-   * @param {string} options.sheetName
+   * @param {string|null} [options.sheetName]
+   * @param {_GasSheetDbRowsReference} [options.rowNumbers]
    */
-  constructor({ spreadsheet, sheetName } = {}) {
+  constructor({ spreadsheet, sheetName, rowNumbers } = {}) {
+    /** @type {GoogleAppsScript.Spreadsheet.Spreadsheet} */
     this.spreadsheet = spreadsheet;
+
+    /** @type {string} */
     this.sheetName = sheetName;
 
-    this.rowNumbers = SHEETDB_ROW_NUMBERS;
-    this.rowIndexes = SHEETDB_ROW_INDEXES;
+    /** @type {_GasSheetDbRowsReference} */
+    this.rowNumbers = rowNumbers; // Base-1 row numbers
 
-    this.sheet = spreadsheet.getSheetByName(sheetName);
+    /** @type {_GasSheetDbRowsReference} */
+    this.rowIndexes = this._deriveRowIndexes(); // Base-0 row indexes
 
-    if (!this.sheet) {
-      this._insertSheet(sheetName);
+    /** @type {GoogleAppsScript.Spreadsheet.Sheet} */
+    this.sheet = this._ensureSheet();
+
+    /** @type {_GasSheetDbTableSchema} */
+    this.schema = new _GasSheetDbTableSchema(this.sheet, this.rowNumbers);
+  }
+
+  // =========================
+  // CONSTRUCTOR HELPERS
+  // =========================
+
+  /**
+   * Derive base-0 data array row indexes from
+   * base-1 spreadsheet row numbers.
+   * @returns {_GasSheetDbRowsReference}
+   */
+  _deriveRowIndexes() {
+    const rowIndexes = {};
+    Object.entries(this.rowNumbers).forEach(
+      ([k, v]) => (rowIndexes[k] = v - 1),
+    );
+
+    return rowIndexes;
+  }
+
+  /**
+   * Ensure the sheet exists, by returning the existing
+   * sheet, or inserting a new one.
+   *
+   * @returns {GoogleAppsScript.SpreadsheetApp.Sheet}
+   */
+  _ensureSheet() {
+    if (this.sheetName) {
+      const sheet = this.spreadsheet.getSheetByName(this.sheetName);
+
+      if (sheet) return sheet;
     }
 
-    this.schema = new _SheetDbTableSchema(this.sheet, this.rowNumbers);
+    return this._insertSheet();
+  }
+
+  /**
+   * Insert a new sheet to the spreadsheet, using the provided
+   * name. Applies basic formatting including alternating
+   * row colors and a frozen header row.
+   *
+   * @returns {GoogleAppsScript.SpreadsheetApp.Sheet}
+   */
+  _insertSheet() {
+    let newSheetName = this.sheetName;
+
+    if (!newSheetName) {
+      const allSheetNames = this.spreadsheet
+        .getSheets()
+        .map((s) => s.getSheetName());
+
+      const defaultSheetName = 'gsd-table-{i}';
+
+      let i = 0;
+      do {
+        newSheetName = defaultSheetName.replace('{i}', i);
+      } while (allSheetNames.includes(newSheetName));
+    }
+
+    this.sheetName = newSheetName;
+
+    const newSheet = this.spreadsheet.insertSheet(newSheetName);
+
+    const maxCols = newSheet.getMaxColumns();
+
+    newSheet
+      .getRange(this.rowNumbers.columnKeys, 1, newSheet.getMaxRows(), maxCols)
+      .applyRowBanding();
+
+    newSheet
+      .getRange(this.rowNumbers.columnKeys, 1, 1, maxCols)
+      .setFontWeight('bold');
+
+    newSheet.setFrozenRows(this.rowNumbers.columnKeys);
+
+    Logger.log('[GasSheetDb] Created new table sheet "%s"', newSheetName);
+
+    return newSheet;
   }
 
   // =========================
@@ -34,13 +117,13 @@ class _SheetDbTable {
    * Read all rows as objects.
    * Adds runtime metadata to each entry.
    *
-   * @returns {object[]}
+   * @returns {Object[]}
    */
   find() {
     return this._withLock(() => {
       this._ensureRequiredMetadata();
 
-      const headers = this.schema.headers;
+      const columnKeys = this.schema.columnKeys;
 
       const data = this._getTableBodyData();
 
@@ -51,8 +134,8 @@ class _SheetDbTable {
 
         const row = data[dataIndex];
 
-        headers.forEach((header, colIndex) => {
-          entry[header] = _SheetDbValueCodec.decode(row[colIndex]);
+        columnKeys.forEach((key, colIndex) => {
+          entry[key] = _GasSheetDbValueCodec.decode(row[colIndex]);
         });
 
         entries.push(entry);
@@ -65,8 +148,8 @@ class _SheetDbTable {
   /**
    * Filter entries using a predicate.
    *
-   * @param {(entry: object) => boolean} predicateFn
-   * @returns {object[]}
+   * @param {(entry: Object) => boolean} predicateFn
+   * @returns {Object[]}
    */
   findWhere(predicateFn) {
     return this.find().filter(predicateFn);
@@ -75,8 +158,8 @@ class _SheetDbTable {
   /**
    * Find the first matching entry.
    *
-   * @param {(entry: object) => boolean} predicateFn
-   * @returns {object|null}
+   * @param {(entry: Object) => boolean} predicateFn
+   * @returns {Object|null}
    */
   findOneWhere(predicateFn) {
     return this.find().find(predicateFn) || null;
@@ -89,7 +172,7 @@ class _SheetDbTable {
   /**
    * Insert a single entry.
    *
-   * @param {object} entry
+   * @param {Object} entry
    */
   insert(entry) {
     this.insertMany([entry]);
@@ -99,7 +182,7 @@ class _SheetDbTable {
    * Insert multiple entries.
    * Missing columns are created automatically.
    *
-   * @param {object[]} entries - Mutated in place: `_id`, `_createdAt`,
+   * @param {Object[]} entries - Mutated in place: `_id`, `_createdAt`,
    *   and `_updatedAt` are added if not already present.
    */
   insertMany(entries) {
@@ -108,9 +191,9 @@ class _SheetDbTable {
 
       this.schema.reload();
 
-      const headers = this._extractHeaders(entries);
+      const columnKeys = this._extractKeys(entries);
 
-      this.schema.ensureColumns(headers);
+      this.schema.ensureColumns(columnKeys);
 
       this.schema.reload();
 
@@ -128,7 +211,7 @@ class _SheetDbTable {
    * Update a single entry.
    * Requires `_id`.
    *
-   * @param {object} entry
+   * @param {Object} entry
    */
   update(entry) {
     this.updateMany([entry]);
@@ -138,7 +221,7 @@ class _SheetDbTable {
    * Update multiple existing entries.
    * Requires `_id` for each entry.
    *
-   * @param {object[]} entries - Mutated in place: `_updatedAt` is
+   * @param {Object[]} entries - Mutated in place: `_updatedAt` is
    *   overwritten with the current time.
    */
   updateMany(entries) {
@@ -146,9 +229,9 @@ class _SheetDbTable {
       // add new property columns
       this.schema.reload();
 
-      const headers = this._extractHeaders(entries);
+      const columnKeys = this._extractKeys(entries);
 
-      this.schema.ensureColumns(headers);
+      this.schema.ensureColumns(columnKeys);
       this.schema.reload();
 
       // load the current data after schema reload
@@ -185,7 +268,7 @@ class _SheetDbTable {
    * Delete a single entry.
    * Requires `_id`.
    *
-   * @param {object} entry
+   * @param {Object} entry
    */
   delete(entry) {
     this.deleteMany([entry]);
@@ -195,7 +278,7 @@ class _SheetDbTable {
    * Delete multiple existing entries.
    * Requires `_id` for each entry.
    *
-   * @param {object[]} entries
+   * @param {Object[]} entries
    */
   deleteMany(entries) {
     this._withLock(() => {
@@ -230,36 +313,11 @@ class _SheetDbTable {
   }
 
   // =========================
-  // SHEET HELPERS
-  // =========================
-  /**
-   *
-   * @param {string} sheetName
-   */
-  _insertSheet(sheetName) {
-    this.sheet = this.spreadsheet.insertSheet(sheetName);
-
-    const maxCols = this.sheet.getMaxColumns();
-
-    this.sheet
-      .getRange(this.rowNumbers.headers, 1, this.sheet.getMaxRows(), maxCols)
-      .applyRowBanding();
-
-    this.sheet
-      .getRange(this.rowNumbers.headers, 1, 1, maxCols)
-      .setFontWeight('bold');
-
-    this.sheet.setFrozenRows(this.rowNumbers.headers);
-
-    Logger.log('[SheetDb] Created missing sheet "%s"', sheetName);
-  }
-
-  // =========================
   // TABLE BODY HELPERS
   // =========================
 
   /**
-   * Return the table body, without the headers.
+   * Return the table body, without the column keys row.
    *
    * @returns {*[][]}
    */
@@ -385,16 +443,16 @@ class _SheetDbTable {
    * @returns {number}
    */
   _getColumnIndex(key) {
-    return this.schema.headers.indexOf(key);
+    return this.schema.columnKeys.indexOf(key);
   }
 
   /**
-   * Extract the column headers from an entry's property keys.
+   * Extract the column keys from an entry's property keys.
    *
-   * @param {object[]} entries
+   * @param {Object[]} entries
    * @returns {string[]}
    */
-  _extractHeaders(entries) {
+  _extractKeys(entries) {
     return [
       ...new Set(
         entries.flatMap((entry) =>
@@ -422,13 +480,13 @@ class _SheetDbTable {
    * Build a sheet row from an entry.
    * Existing values are preserved when a field is undefined.
    *
-   * @param {object} entry
+   * @param {Object} entry
    * @param {Array} existingRow
    * @returns {Array}
    */
   _buildRow(entry, existingRow = []) {
-    return this.schema.headers.map((header, index) => {
-      const value = entry[header];
+    return this.schema.columnKeys.map((key, index) => {
+      const value = entry[key];
 
       if (value === undefined) {
         return existingRow[index] ?? '';
@@ -480,7 +538,7 @@ class _SheetDbTable {
   /**
    * Apply system fields for new entries.
    *
-   * @param {object} entry
+   * @param {Object} entry
    */
   _applyInsertMetadata(entry) {
     const now = new Date();
@@ -501,7 +559,7 @@ class _SheetDbTable {
   /**
    * Update system timestamps.
    *
-   * @param {object} entry
+   * @param {Object} entry
    */
   _applyUpdateMetadata(entry) {
     const keys = SHEETDB_SYSTEM_FIELDS;

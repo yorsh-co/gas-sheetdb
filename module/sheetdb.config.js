@@ -1,19 +1,4 @@
 /**
- * Sheet row numbers (1-based).
- */
-const SHEETDB_ROW_NUMBERS = {
-  headers: 1,
-  firstData: 2,
-};
-
-/**
- * Zero-based row indexes derived from `SHEET_ROW_NUMBERS`.
- */
-const SHEETDB_ROW_INDEXES = {
-  headers: null,
-  firstData: null,
-};
-/**
  * Persistent fields managed automatically by the module.
  */
 const SHEETDB_SYSTEM_FIELDS = Object.freeze({
