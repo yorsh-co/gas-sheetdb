@@ -15,7 +15,7 @@ class GasSheetDb {
    *
    * @param {boolean} [options.useActiveSpreadsheet] // Default when not spreadsheet configuration is provided
    *
-   * @param {_GasSheetDbRowsReference} [options.rowNumbers] - instance-wide default row config
+   * @param {GasSheetDbRowsReference} [options.rowNumbers] - instance-wide default row config
    */
   constructor(options = {}) {
     this.spreadsheet = this._resolveSpreadsheet(options);
@@ -84,7 +84,7 @@ class GasSheetDb {
    *
    * @param {Object} options
    * @param {string} [options.sheetName = null] // If left blank, the sheet will automatically be named 'gsd-i'. `i` will be replaced by an index.
-   * @param {_GasSheetDbRowsReference} [options.rowNumbers = {}] // Optionally set sheet-specific row numbers to overrule the row numbers defined in the GasSheetDb instance.
+   * @param {GasSheetDbRowsReference} [options.rowNumbers = {}] // Optionally set sheet-specific row numbers to overrule the row numbers defined in the GasSheetDb instance.
    *
    * @returns {_GasSheetDbTable}
    */

@@ -9,7 +9,7 @@ class _GasSheetDbTable {
    * @param {Object} options
    * @param {GoogleAppsScript.Spreadsheet.Spreadsheet} options.spreadsheet
    * @param {string|null} [options.sheetName]
-   * @param {_GasSheetDbRowsReference} [options.rowNumbers]
+   * @param {GasSheetDbRowsReference} [options.rowNumbers]
    */
   constructor({ spreadsheet, sheetName, rowNumbers } = {}) {
     /** @type {GoogleAppsScript.Spreadsheet.Spreadsheet} */
@@ -18,10 +18,10 @@ class _GasSheetDbTable {
     /** @type {string} */
     this.sheetName = sheetName;
 
-    /** @type {_GasSheetDbRowsReference} */
+    /** @type {GasSheetDbRowsReference} */
     this.rowNumbers = rowNumbers; // Base-1 row numbers
 
-    /** @type {_GasSheetDbRowsReference} */
+    /** @type {GasSheetDbRowsReference} */
     this.rowIndexes = this._deriveRowIndexes(); // Base-0 row indexes
 
     /** @type {GoogleAppsScript.Spreadsheet.Sheet} */
@@ -38,7 +38,7 @@ class _GasSheetDbTable {
   /**
    * Derive base-0 data array row indexes from
    * base-1 spreadsheet row numbers.
-   * @returns {_GasSheetDbRowsReference}
+   * @returns {GasSheetDbRowsReference}
    */
   _deriveRowIndexes() {
     const rowIndexes = {};

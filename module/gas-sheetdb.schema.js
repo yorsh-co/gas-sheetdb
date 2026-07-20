@@ -4,7 +4,7 @@
 class _GasSheetDbTableSchema {
   /**
    * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
-   * @param {_GasSheetDbRowsReference} rowNumbers
+   * @param {GasSheetDbRowsReference} rowNumbers
    */
   constructor(sheet, rowNumbers) {
     this.sheet = sheet;
