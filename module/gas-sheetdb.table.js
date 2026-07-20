@@ -4,26 +4,109 @@
  * Provides object-based querying, inserts, updates,
  * automatic column management, and metadata handling.
  */
-class _SheetDbTable {
+class _GasSheetDbTable {
   /**
-   * @param {object} options
+   * @param {Object} options
    * @param {GoogleAppsScript.Spreadsheet.Spreadsheet} options.spreadsheet
-   * @param {string} options.sheetName
+   * @param {string|null} [options.sheetName]
+   * @param {GasSheetDbRowsReference} [options.rowNumbers]
    */
-  constructor({ spreadsheet, sheetName } = {}) {
+  constructor({ spreadsheet, sheetName, rowNumbers } = {}) {
+    /** @type {GoogleAppsScript.Spreadsheet.Spreadsheet} */
     this.spreadsheet = spreadsheet;
+
+    /** @type {string} */
     this.sheetName = sheetName;
 
-    this.rowNumbers = SHEETDB_ROW_NUMBERS;
-    this.rowIndexes = SHEETDB_ROW_INDEXES;
+    /** @type {GasSheetDbRowsReference} */
+    this.rowNumbers = rowNumbers; // Base-1 row numbers
 
-    this.sheet = spreadsheet.getSheetByName(sheetName);
+    /** @type {GasSheetDbRowsReference} */
+    this.rowIndexes = this._deriveRowIndexes(); // Base-0 row indexes
 
-    if (!this.sheet) {
-      this._insertSheet(sheetName);
+    /** @type {GoogleAppsScript.Spreadsheet.Sheet} */
+    this.sheet = this._ensureSheet();
+
+    /** @type {_GasSheetDbTableSchema} */
+    this.schema = new _GasSheetDbTableSchema(this.sheet, this.rowNumbers);
+  }
+
+  // =========================
+  // CONSTRUCTOR HELPERS
+  // =========================
+
+  /**
+   * Derive base-0 data array row indexes from
+   * base-1 spreadsheet row numbers.
+   * @returns {GasSheetDbRowsReference}
+   */
+  _deriveRowIndexes() {
+    const rowIndexes = {};
+    Object.entries(this.rowNumbers).forEach(
+      ([k, v]) => (rowIndexes[k] = v - 1),
+    );
+
+    return rowIndexes;
+  }
+
+  /**
+   * Ensure the sheet exists, by returning the existing
+   * sheet, or inserting a new one.
+   *
+   * @returns {GoogleAppsScript.SpreadsheetApp.Sheet}
+   */
+  _ensureSheet() {
+    if (this.sheetName) {
+      const sheet = this.spreadsheet.getSheetByName(this.sheetName);
+
+      if (sheet) return sheet;
     }
 
-    this.schema = new _SheetDbTableSchema(this.sheet, this.rowNumbers);
+    return this._insertSheet();
+  }
+
+  /**
+   * Insert a new sheet to the spreadsheet, using the provided
+   * name. Applies basic formatting including alternating
+   * row colors and a frozen header row.
+   *
+   * @returns {GoogleAppsScript.SpreadsheetApp.Sheet}
+   */
+  _insertSheet() {
+    let newSheetName = this.sheetName;
+
+    if (!newSheetName) {
+      const allSheetNames = this.spreadsheet
+        .getSheets()
+        .map((s) => s.getSheetName());
+
+      const defaultSheetName = 'gsd-table-{i}';
+
+      let i = 0;
+      do {
+        newSheetName = defaultSheetName.replace('{i}', i);
+      } while (allSheetNames.includes(newSheetName));
+    }
+
+    this.sheetName = newSheetName;
+
+    const newSheet = this.spreadsheet.insertSheet(newSheetName);
+
+    const maxCols = newSheet.getMaxColumns();
+
+    newSheet
+      .getRange(this.rowNumbers.columnKeys, 1, newSheet.getMaxRows(), maxCols)
+      .applyRowBanding();
+
+    newSheet
+      .getRange(this.rowNumbers.columnKeys, 1, 1, maxCols)
+      .setFontWeight('bold');
+
+    newSheet.setFrozenRows(this.rowNumbers.columnKeys);
+
+    Logger.log('[GasSheetDb] Created new table sheet "%s"', newSheetName);
+
+    return newSheet;
   }
 
   // =========================
@@ -34,26 +117,36 @@ class _SheetDbTable {
    * Read all rows as objects.
    * Adds runtime metadata to each entry.
    *
-   * @returns {object[]}
+   * @param {Object} [options]
+   * @param {boolean} [options.withTrashed = false]
+   * @param {boolean} [options.onlyTrashed = false]
+   *
+   * @returns {Object[]}
    */
-  find() {
+  find(options = {}) {
+    const { withTrashed = false, onlyTrashed = false } = options;
+
     return this._withLock(() => {
       this._ensureRequiredMetadata();
 
-      const headers = this.schema.headers;
-
       const data = this._getTableBodyData();
+
+      const isTrashedColIndex = this._getColumnIndex(
+        _GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED,
+      );
 
       const entries = [];
 
       for (let dataIndex = 0; dataIndex < data.length; dataIndex++) {
-        const entry = {};
-
         const row = data[dataIndex];
 
-        headers.forEach((header, colIndex) => {
-          entry[header] = _SheetDbValueCodec.decode(row[colIndex]);
-        });
+        // handle `onlyTrashed = true`
+        if (onlyTrashed && !row[isTrashedColIndex]) continue;
+
+        // handle `withTrashed = false`
+        if (!onlyTrashed && !withTrashed && row[isTrashedColIndex]) continue;
+
+        const entry = this._decodeRow(row);
 
         entries.push(entry);
       }
@@ -65,8 +158,8 @@ class _SheetDbTable {
   /**
    * Filter entries using a predicate.
    *
-   * @param {(entry: object) => boolean} predicateFn
-   * @returns {object[]}
+   * @param {(entry: Object) => boolean} predicateFn
+   * @returns {Object[]}
    */
   findWhere(predicateFn) {
     return this.find().filter(predicateFn);
@@ -75,11 +168,26 @@ class _SheetDbTable {
   /**
    * Find the first matching entry.
    *
-   * @param {(entry: object) => boolean} predicateFn
-   * @returns {object|null}
+   * @param {(entry: Object) => boolean} predicateFn
+   * @returns {Object|null}
    */
   findOneWhere(predicateFn) {
     return this.find().find(predicateFn) || null;
+  }
+
+  /**
+   * Find trashed entries.
+   * Optionally, filter trashed entries.
+   *
+   * @param {(entry: Object) => boolean} [predicateFn = null] // Optional filter.
+   * @returns {Object[]}
+   */
+  findTrashed(predicateFn = null) {
+    if (predicateFn) {
+      return this.find({ onlyTrashed: true }).filter(predicateFn);
+    }
+
+    return this.find({ onlyTrashed: true });
   }
 
   // =========================
@@ -89,34 +197,40 @@ class _SheetDbTable {
   /**
    * Insert a single entry.
    *
-   * @param {object} entry
+   * @param {Object} entry
+   * @returns {Object} - The inserted entry with added metadata
    */
   insert(entry) {
-    this.insertMany([entry]);
+    return this.insertMany([entry])[0];
   }
 
   /**
    * Insert multiple entries.
    * Missing columns are created automatically.
    *
-   * @param {object[]} entries - Mutated in place: `_id`, `_createdAt`,
+   * @param {Object[]} entries - Mutated in place: `_id`, `_createdAt`,
    *   and `_updatedAt` are added if not already present.
+   * @returns {Object[]} - The inserted entries with added metadata
    */
   insertMany(entries) {
-    this._withLock(() => {
+    return this._withLock(() => {
       entries.forEach((entry) => this._applyInsertMetadata(entry));
 
       this.schema.reload();
 
-      const headers = this._extractHeaders(entries);
+      const columnKeys = this._extractKeys(entries);
 
-      this.schema.ensureColumns(headers);
+      this.schema.ensureColumns(columnKeys);
 
       this.schema.reload();
 
       const data = entries.map((entry) => this._buildRow(entry));
 
       this._appendTableBodyData(data);
+
+      const insertedEntries = data.map((row) => this._decodeRow(row));
+
+      return insertedEntries;
     });
   }
 
@@ -128,27 +242,28 @@ class _SheetDbTable {
    * Update a single entry.
    * Requires `_id`.
    *
-   * @param {object} entry
+   * @param {Object} entry
+   * @returns {Object} - The updated entry
    */
   update(entry) {
-    this.updateMany([entry]);
+    return this.updateMany([entry])[0];
   }
 
   /**
    * Update multiple existing entries.
    * Requires `_id` for each entry.
    *
-   * @param {object[]} entries - Mutated in place: `_updatedAt` is
-   *   overwritten with the current time.
+   * @param {Object[]} entries - Mutated in place: `_updatedAt` is overwritten with the current time.
+   * @returns {Object[]} - The updated entries
    */
   updateMany(entries) {
-    this._withLock(() => {
+    return this._withLock(() => {
       // add new property columns
       this.schema.reload();
 
-      const headers = this._extractHeaders(entries);
+      const columnKeys = this._extractKeys(entries);
 
-      this.schema.ensureColumns(headers);
+      this.schema.ensureColumns(columnKeys);
       this.schema.reload();
 
       // load the current data after schema reload
@@ -156,6 +271,10 @@ class _SheetDbTable {
 
       // map the row indexes
       const rowIndexesById = this._mapTableBodyRowIndexesById(data);
+
+      // gather the updated row indexes so that the entries can be
+      // returned in their post-`_buildRow` state
+      const updatedRowIndexes = [];
 
       for (const entry of entries) {
         if (!entry._id) {
@@ -171,10 +290,69 @@ class _SheetDbTable {
         this._applyUpdateMetadata(entry);
 
         data[rowIndex] = this._buildRow(entry, data[rowIndex]);
+
+        updatedRowIndexes.push(rowIndex);
       }
 
       this._setTableBodyData(data);
+
+      // return the entries in their post-`_buildRow` state
+      return updatedRowIndexes.map((rowIndex) =>
+        this._decodeRow(data[rowIndex]),
+      );
     });
+  }
+
+  // =========================
+  // SOFT DELETE
+  // =========================
+
+  /**
+   * Soft delete a single entry.
+   * Requires `_id`.
+   *
+   * @param {Object} entry
+   * @returns {Object} - The deleted entry
+   */
+  softDelete(entry) {
+    return this.softDeleteMany([entry])[0];
+  }
+
+  /**
+   * Soft delete multiple existing entries.
+   * Requires `_id` for each entry.
+   *
+   * @param {Object[]} entries
+   * @returns {Object[]} - The deleted entries
+   */
+  softDeleteMany(entries) {
+    entries.forEach((e) => (e[_GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED] = true));
+
+    return this.updateMany(entries);
+  }
+
+  /**
+   * Restore a single soft-deleted entry.
+   * Requires `_id`.
+   *
+   * @param {Object} entry
+   * @returns {Object} - The restored entry
+   */
+  restore(entry) {
+    return this.restoreMany([entry])[0];
+  }
+
+  /**
+   * Restore multiple soft-deleted entries.
+   * Requires `_id` for each entry.
+   *
+   * @param {Object[]} entries
+   * @returns {Object[]} - The restored entries
+   */
+  restoreMany(entries) {
+    entries.forEach((e) => (e[_GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED] = false));
+
+    return this.updateMany(entries);
   }
 
   // =========================
@@ -182,20 +360,20 @@ class _SheetDbTable {
   // =========================
 
   /**
-   * Delete a single entry.
+   * Permanently delete a single entry.
    * Requires `_id`.
    *
-   * @param {object} entry
+   * @param {Object} entry
    */
   delete(entry) {
     this.deleteMany([entry]);
   }
 
   /**
-   * Delete multiple existing entries.
+   * Permanently delete multiple existing entries.
    * Requires `_id` for each entry.
    *
-   * @param {object[]} entries
+   * @param {Object[]} entries
    */
   deleteMany(entries) {
     this._withLock(() => {
@@ -230,36 +408,11 @@ class _SheetDbTable {
   }
 
   // =========================
-  // SHEET HELPERS
-  // =========================
-  /**
-   *
-   * @param {string} sheetName
-   */
-  _insertSheet(sheetName) {
-    this.sheet = this.spreadsheet.insertSheet(sheetName);
-
-    const maxCols = this.sheet.getMaxColumns();
-
-    this.sheet
-      .getRange(this.rowNumbers.headers, 1, this.sheet.getMaxRows(), maxCols)
-      .applyRowBanding();
-
-    this.sheet
-      .getRange(this.rowNumbers.headers, 1, 1, maxCols)
-      .setFontWeight('bold');
-
-    this.sheet.setFrozenRows(this.rowNumbers.headers);
-
-    Logger.log('[SheetDb] Created missing sheet "%s"', sheetName);
-  }
-
-  // =========================
   // TABLE BODY HELPERS
   // =========================
 
   /**
-   * Return the table body, without the headers.
+   * Return the table body, without the column keys row.
    *
    * @returns {*[][]}
    */
@@ -357,11 +510,11 @@ class _SheetDbTable {
   _mapTableBodyRowIndexesById(tableBody = null) {
     const data = tableBody || this._getTableBodyData();
 
-    const idColIndex = this._getColumnIndex(SHEETDB_SYSTEM_FIELDS.ID);
+    const idColIndex = this._getColumnIndex(_GAS_SHEETDB_SYSTEM_FIELDS.ID);
 
     if (idColIndex === -1) {
       throw new Error(
-        `Cannot map rows by "${SHEETDB_SYSTEM_FIELDS.ID}": column does not exist on sheet "${this.sheetName}". Call find() at least once before update/delete.`,
+        `Cannot map rows by "${_GAS_SHEETDB_SYSTEM_FIELDS.ID}": column does not exist on sheet "${this.sheetName}". Call find() at least once before update/delete.`,
       );
     }
 
@@ -385,16 +538,16 @@ class _SheetDbTable {
    * @returns {number}
    */
   _getColumnIndex(key) {
-    return this.schema.headers.indexOf(key);
+    return this.schema.columnKeys.indexOf(key);
   }
 
   /**
-   * Extract the column headers from an entry's property keys.
+   * Extract the column keys from an entry's property keys.
    *
-   * @param {object[]} entries
+   * @param {Object[]} entries
    * @returns {string[]}
    */
-  _extractHeaders(entries) {
+  _extractKeys(entries) {
     return [
       ...new Set(
         entries.flatMap((entry) =>
@@ -415,27 +568,43 @@ class _SheetDbTable {
    * @returns {boolean}
    */
   _isPersistedField(key) {
-    return !SHEETDB_NON_PERSISTED_FIELDS.has(key);
+    return !_GAS_SHEETDB_NON_PERSISTED_FIELDS.has(key);
   }
 
   /**
    * Build a sheet row from an entry.
    * Existing values are preserved when a field is undefined.
    *
-   * @param {object} entry
+   * @param {Object} entry
    * @param {Array} existingRow
    * @returns {Array}
    */
   _buildRow(entry, existingRow = []) {
-    return this.schema.headers.map((header, index) => {
-      const value = entry[header];
+    return this.schema.columnKeys.map((key, index) => {
+      const value = entry[key];
 
       if (value === undefined) {
         return existingRow[index] ?? '';
       }
 
-      return _SheetDbValueCodec.encode(value);
+      return _GasSheetDbValueCodec.encode(value);
     });
+  }
+
+  /**
+   * Decode a raw sheet row into an entry object.
+   *
+   * @param {Array} row
+   * @returns {Object}
+   */
+  _decodeRow(row) {
+    const entry = {};
+
+    this.schema.columnKeys.forEach((key, colIndex) => {
+      entry[key] = _GasSheetDbValueCodec.decode(row[colIndex]);
+    });
+
+    return entry;
   }
 
   /**
@@ -445,19 +614,22 @@ class _SheetDbTable {
    * reading and writing with SheetDB.
    */
   _ensureRequiredMetadata() {
-    this.schema.ensureColumns(Object.values(SHEETDB_SYSTEM_FIELDS));
+    this.schema.ensureColumns(Object.values(_GAS_SHEETDB_SYSTEM_FIELDS));
     this.schema.reload();
 
     const data = this._getTableBodyData();
 
     if (!data.length) return;
 
-    const idColIndex = this._getColumnIndex(SHEETDB_SYSTEM_FIELDS.ID);
+    const idColIndex = this._getColumnIndex(_GAS_SHEETDB_SYSTEM_FIELDS.ID);
     const createdAtColIndex = this._getColumnIndex(
-      SHEETDB_SYSTEM_FIELDS.CREATED_AT,
+      _GAS_SHEETDB_SYSTEM_FIELDS.CREATED_AT,
     );
     const updatedAtColIndex = this._getColumnIndex(
-      SHEETDB_SYSTEM_FIELDS.UPDATED_AT,
+      _GAS_SHEETDB_SYSTEM_FIELDS.UPDATED_AT,
+    );
+    const isTrashedColIndex = this._getColumnIndex(
+      _GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED,
     );
 
     const now = new Date();
@@ -468,6 +640,10 @@ class _SheetDbTable {
       if (!data[i][createdAtColIndex]) data[i][createdAtColIndex] = now;
 
       if (!data[i][updatedAtColIndex]) data[i][updatedAtColIndex] = now;
+
+      if (typeof data[i][isTrashedColIndex] !== 'boolean') {
+        data[i][isTrashedColIndex] = false;
+      }
     }
 
     this._setTableBodyData(data);
@@ -480,12 +656,12 @@ class _SheetDbTable {
   /**
    * Apply system fields for new entries.
    *
-   * @param {object} entry
+   * @param {Object} entry
    */
   _applyInsertMetadata(entry) {
     const now = new Date();
 
-    const keys = SHEETDB_SYSTEM_FIELDS;
+    const keys = _GAS_SHEETDB_SYSTEM_FIELDS;
 
     if (!entry[keys.ID]) {
       entry[keys.ID] = this._generateId();
@@ -501,10 +677,10 @@ class _SheetDbTable {
   /**
    * Update system timestamps.
    *
-   * @param {object} entry
+   * @param {Object} entry
    */
   _applyUpdateMetadata(entry) {
-    const keys = SHEETDB_SYSTEM_FIELDS;
+    const keys = _GAS_SHEETDB_SYSTEM_FIELDS;
 
     entry[keys.UPDATED_AT] = new Date();
   }
