@@ -123,20 +123,14 @@ class _GasSheetDbTable {
     return this._withLock(() => {
       this._ensureRequiredMetadata();
 
-      const columnKeys = this.schema.columnKeys;
-
       const data = this._getTableBodyData();
 
       const entries = [];
 
       for (let dataIndex = 0; dataIndex < data.length; dataIndex++) {
-        const entry = {};
-
         const row = data[dataIndex];
 
-        columnKeys.forEach((key, colIndex) => {
-          entry[key] = _GasSheetDbValueCodec.decode(row[colIndex]);
-        });
+        const entry = this._decodeRow(row);
 
         entries.push(entry);
       }
@@ -173,9 +167,10 @@ class _GasSheetDbTable {
    * Insert a single entry.
    *
    * @param {Object} entry
+   * @returns {Object} - The inserted entry with added metadata
    */
   insert(entry) {
-    this.insertMany([entry]);
+    return this.insertMany([entry])[0];
   }
 
   /**
@@ -184,9 +179,10 @@ class _GasSheetDbTable {
    *
    * @param {Object[]} entries - Mutated in place: `_id`, `_createdAt`,
    *   and `_updatedAt` are added if not already present.
+   * @returns {Object[]} - The inserted entries with added metadata
    */
   insertMany(entries) {
-    this._withLock(() => {
+    return this._withLock(() => {
       entries.forEach((entry) => this._applyInsertMetadata(entry));
 
       this.schema.reload();
@@ -200,6 +196,10 @@ class _GasSheetDbTable {
       const data = entries.map((entry) => this._buildRow(entry));
 
       this._appendTableBodyData(data);
+
+      const insertedEntries = data.map((row) => this._decodeRow(row));
+
+      return insertedEntries;
     });
   }
 
@@ -212,20 +212,21 @@ class _GasSheetDbTable {
    * Requires `_id`.
    *
    * @param {Object} entry
+   * @returns {Object} - The updated entry
    */
   update(entry) {
-    this.updateMany([entry]);
+    return this.updateMany([entry])[0];
   }
 
   /**
    * Update multiple existing entries.
    * Requires `_id` for each entry.
    *
-   * @param {Object[]} entries - Mutated in place: `_updatedAt` is
-   *   overwritten with the current time.
+   * @param {Object[]} entries - Mutated in place: `_updatedAt` is overwritten with the current time.
+   * @returns {Object[]} - The updated entries
    */
   updateMany(entries) {
-    this._withLock(() => {
+    return this._withLock(() => {
       // add new property columns
       this.schema.reload();
 
@@ -239,6 +240,10 @@ class _GasSheetDbTable {
 
       // map the row indexes
       const rowIndexesById = this._mapTableBodyRowIndexesById(data);
+
+      // gather the updated row indexes so that the entries can be
+      // returned in their post-`_buildRow` state
+      const updatedRowIndexes = [];
 
       for (const entry of entries) {
         if (!entry._id) {
@@ -254,9 +259,16 @@ class _GasSheetDbTable {
         this._applyUpdateMetadata(entry);
 
         data[rowIndex] = this._buildRow(entry, data[rowIndex]);
+
+        updatedRowIndexes.push(rowIndex);
       }
 
       this._setTableBodyData(data);
+
+      // return the entries in their post-`_buildRow` state
+      return updatedRowIndexes.map((rowIndex) =>
+        this._decodeRow(data[rowIndex]),
+      );
     });
   }
 
@@ -494,6 +506,22 @@ class _GasSheetDbTable {
 
       return _GasSheetDbValueCodec.encode(value);
     });
+  }
+
+  /**
+   * Decode a raw sheet row into an entry object.
+   *
+   * @param {Array} row
+   * @returns {Object}
+   */
+  _decodeRow(row) {
+    const entry = {};
+
+    this.schema.columnKeys.forEach((key, colIndex) => {
+      entry[key] = _GasSheetDbValueCodec.decode(row[colIndex]);
+    });
+
+    return entry;
   }
 
   /**
