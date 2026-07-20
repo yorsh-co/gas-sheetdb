@@ -8,7 +8,7 @@
 
 `gas-sheetdb` uses Apps Script's `SpreadsheetApp` to turn sheets in a Google Spreadsheet into tables that store object entries as rows.
 
-Entries can be queried and updated through a `GasSheetDb` instance using methods like `find`, `insert`, `update` and `delete`.
+Entries can be queried and updated through a `GasSheetDb` instance using ORM-like methods such as `find`, `insert`, `update`, `softDelete`, `restore` and `delete`.
 
 > **Disclaimer:**
 > This project and [Yorsh](https://github.com/yorsh-co) are independent and are not affiliated with, endorsed by, or associated with Google LLC.
@@ -17,9 +17,12 @@ Entries can be queried and updated through a `GasSheetDb` instance using methods
 
 - Store object entries as rows in sheets
 - Query entries using methods like find, findWhere, and findOneWhere
-- Insert, update and delete entries using plain JavaScript objects
+- Insert, update, soft delete, restore and permanently delete entries using plain JavaScript objects
+- Write operations return the persisted entries, including the generated metadata
 - Automatically creates missing columns when new properties appear during inserts or updates
-- Automatically adds `_id`, `_createdAt`, and `_updatedAt` fields to new entries
+- Automatically adds `_id`, `_createdAt`, `_updatedAt`, and `_isDeleted` metadata fields to new entries
+- Automatically mutates the metadata properties of entries passed to write operations
+- Returns the full entry object after partial updates
 - Instance-based API — configure spreadsheet source and row numbers per instance, with per-table overrides
 - Objects and arrays are JSON serialized
 - Accepts new entries inserted manually to the spreadsheet
@@ -50,10 +53,20 @@ admins.forEach((admin) => {
 
 usersTable.updateMany(admins);
 
-// Delete users
+// Soft delete
 const revoked = usersTable.findWhere((user) => user.access === 'revoked');
 
-usersTable.deleteMany(revoked);
+usersTable.softDeleteMany(revoked);
+
+// Restore
+const usersToRestore = usersTable.findTrashed((user) => user.project ===='projectA1');
+
+usersTable.restoreMany(usersToRestore);
+
+// Permanently delete
+const usersToDelete =usersTable.findTrashed((user) => user.project ===='projectB1');
+
+usersTable.deleteMany(usersToDelete);
 ```
 
 ## Requirements
@@ -346,7 +359,7 @@ usersTable.insertMany([
 ```
 
 > **Note:**
-> `insert` and `insertMany` mutate the entry objects passed in, adding `_id`, `_createdAt`, and `_updatedAt` in place.
+> `insert` and `insertMany` mutate the entry objects passed in, adding `_id`, `_createdAt`, `_updatedAt` and `_isDeleted` in place.
 
 ### Read All Entries
 
@@ -357,21 +370,43 @@ const users = usersTable.find();
 ### Filter Entries
 
 ```js
-const admins = usersTable.findWhere((entry) => entry.role === 'admin');
+const admins = usersTable.findWhere((user) => user.role === 'admin');
 ```
 
 ### Find a Single Entry
 
 ```js
-const user = usersTable.findOneWhere((entry) => entry._id === 'abc123');
+const user = usersTable.findOneWhere((user) => user._id === 'abc123');
+```
+
+> **Note:**
+> The `find`, `findWhere` and `findOneWhere` methods exclude soft-deleted entries by default.
+
+### Find Deleted Entries
+
+```js
+// return all soft-deleted entries
+const deletedUsers = usersTable.findTrashed();
+
+// optionally filter soft-deleted entries
+const deletedUsers = usersTable.findTrashed((user) => user._id === 'abc123');
+
+// also supported
+const deletedUsers = usersTable.find({ onlyTrashed: true });
+```
+
+### Find Active and Deleted Entries
+
+```js
+const allUsers = usersTable.find({ withTrashed: true });
 ```
 
 ### Update an Entry
 
 > **Note:**
-> The `update` and `updateMany` methods currently only accepts entries that were returned from the `find`, `findWhere` or `findOneWhere` and updated in runtime. Updating entries without the original `_id` property included the payload is not currently supported.
+> The `update` and `updateMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
 >
-> Both methods mutate the entry objects passed in — `_updatedAt` is overwritten in place. If you need the pre-update value, copy it before calling `update`/`updateMany`.
+> Both methods mutate the metadata of the entry objects passed in the argument and also return the full entry object(s) after mutation.
 
 ```js
 const user = usersTable.findOneWhere(
@@ -386,9 +421,9 @@ usersTable.update(user);
 ### Update Multiple Entries
 
 > **Note:**
-> The `update` and `updateMany` methods currently only accepts entries that were returned from the `find`, `findWhere` or `findOneWhere` and updated in runtime. Updating entries without the original `_id` property included the payload is not currently supported.
+> The `update` and `updateMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
 >
-> Both methods mutate the entry objects passed in — `_updatedAt` is overwritten in place. If you need the pre-update value, copy it before calling `update`/`updateMany`.
+> Both methods mutate the metadata of the entry objects passed in the argument and also return the full entry object(s) after mutation.
 
 ```js
 const users = usersTable.findWhere((entry) => entry.role === 'editor');
@@ -400,10 +435,86 @@ users.forEach((user) => {
 usersTable.updateMany(users);
 ```
 
-### Delete an Entry
+### Partial Update
 
 > **Note:**
-> The `delete` and `deleteMany` methods currently only accepts entries that were returned from the `find`, `findWhere` or `findOneWhere`. Deleting entries without the original `_id` property included the payload is not currently supported.
+> As long as the object contains original `_id` property returned by one of the `find...()` methods, `update` and `updateMany` can accept partial entries.
+>
+> Both methods return the full entry object(s) after mutation.
+
+```js
+const oldUser = usersTable.findOneWhere(
+  (entry) => entry.email === 'john@email.com',
+);
+
+const userRoleConfig = {
+  _id: user._id,
+  role: 'editor',
+};
+
+const updatedUser = usersTable.update(userRoleConfig); // returns the full entry
+```
+
+### Soft Delete an Entry
+
+> **Note:**
+> The `softDelete` and `softDeleteMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
+>
+> Both methods mutate the metadata of the entry objects passed in the argument and also return the full entry object(s) after mutation.
+
+```js
+const user = usersTable.findOneWhere(
+  (entry) => entry.email === 'john@email.com',
+);
+
+usersTable.softDelete(user);
+```
+
+### Soft Delete Multiple Entries
+
+> **Note:**
+> The `softDelete` and `softDeleteMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
+>
+> Both methods mutate the metadata of the entry objects passed in the argument and also return the full entry object(s) after mutation.
+
+```js
+const users = usersTable.findWhere((entry) => entry.access === 'revoked');
+
+usersTable.softDeleteMany(users);
+```
+
+### Restore an Entry
+
+> **Note:**
+> The `restore` and `restoreMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
+>
+> Both methods mutate the metadata of the entry objects passed in the argument and also return the full entry object(s) after mutation.
+
+```js
+const user = usersTable.findTrashed(
+  (entry) => entry.email === 'john@email.com',
+)[0]; // `findTrashed` returns an array of entries
+
+usersTable.restore(user);
+```
+
+### Restore Multiple Entries
+
+> **Note:**
+> The `restore` and `restoreMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
+>
+> Both methods mutate the metadata of the entry objects passed in the argument and also return the full entry object(s) after mutation.
+
+```js
+const users = usersTable.findTrashed((entry) => entry.access === 'renewed');
+
+usersTable.restoreMany(users);
+```
+
+### Permanently Delete an Entry
+
+> **Note:**
+> The `delete` and `deleteMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
 
 ```js
 const user = usersTable.findOneWhere(
@@ -413,10 +524,10 @@ const user = usersTable.findOneWhere(
 usersTable.delete(user);
 ```
 
-### Delete Multiple Entries
+### Permanently Delete Multiple Entries
 
 > **Note:**
-> The `delete` and `deleteMany` methods currently only accepts entries that were returned from the `find`, `findWhere` or `findOneWhere`. Deleting entries without the original `_id` property included the payload is not currently supported.
+> The `delete` and `deleteMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
 
 ```js
 const users = usersTable.findWhere((entry) => entry.access === 'revoked');
@@ -451,8 +562,23 @@ New entries automatically receive:
   _id: 'uuid',
   _createdAt: Date,
   _updatedAt: Date,
+  _isDeleted: boolean
 }
 ```
+
+> **Note:** All metadata properties are managed automatically and should not normally be modified directly.
+
+### Entry Lifecycle
+
+Entries normally exist in one of two states:
+
+- active
+- soft deleted
+
+Soft-deleted entries remain stored in the sheet and can be restored later.
+They are excluded from `find()` by default.
+
+Permanent deletion removes rows from the spreadsheet entirely.
 
 ### Manual inserts
 
@@ -514,9 +640,15 @@ GasSheetDb(...).table({ sheetName, rowNumbers });
 Query Methods:
 
 ```js
-find();
-findWhere(predicateFn);
-findOneWhere(predicateFn);
+find(
+  {
+    withTrashed: boolean, // optional
+    onlyTrashed: boolean // optional
+   }
+); // hides deleted entries by default
+findWhere(predicateFn); // hides deleted entries by default
+findOneWhere(predicateFn); // hides deleted entries by default
+findTrashed(predicateFn); // `predicateFn` is optional for `findTrashed()`
 ```
 
 Insert Methods:
@@ -533,12 +665,20 @@ update(entry);
 updateMany(entries);
 ```
 
-Delete Methods:
+Deletion Methods:
 
 ```js
+softDelete(entry);
+softDeleteMany(entry);
+
+restore(entry);
+restoreMany(entries);
+
 delete(entry);
 deleteMany(entries);
 ```
+
+> **Note:** All write operations mutate the original object [metadata](#metadata) and also return the persisted entry(ies). This keeps the in-memory instance up to date with the persisted state, while also allowing for partial entries to be passed to the write operation methods as long as the original entry `_id` property is included.
 
 ### Example Workflow
 
@@ -563,10 +703,20 @@ admins.forEach((admin) => {
 
 usersTable.updateMany(admins);
 
-// Delete users
+// Soft delete
 const revoked = usersTable.findWhere((user) => user.access === 'revoked');
 
-usersTable.deleteMany(revoked);
+usersTable.softDeleteMany(revoked);
+
+// Restore
+const usersToRestore = usersTable.findTrashed((user) => user.project ===='projectA1');
+
+usersTable.restoreMany(usersToRestore);
+
+// Permanently delete
+const usersToDelete =usersTable.findTrashed((user) => user.project ===='projectB1');
+
+usersTable.deleteMany(usersToDelete);
 ```
 
 ## Planned features
