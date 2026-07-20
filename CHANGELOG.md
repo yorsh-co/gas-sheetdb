@@ -1,8 +1,18 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+---
 
-The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+## [Unreleased]
+
+### Changed
+- **BREAKING:** `SheetDb` singleton replaced by an instantiable `GasSheetDb` class. Replace `SheetDb.table(name)` with `new GasSheetDb(options).table({ sheetName })`.
+- Spreadsheet source is now resolved explicitly per instance via `spreadsheet`, `spreadsheetUrl`, `spreadsheetId`, or `useActiveSpreadsheet` — passing more than one throws instead of falling back to a silent priority order.
+- Row configuration (`columnKeys`/`firstData`) is now set via constructor/table options instead of a global config file, with instance-level defaults overridable per table.
+- Renamed internal "headers" terminology to "columnKeys" throughout (schema and table classes) for clarity.
+
+### Removed
+- `sheetdb.config.js` and its module-level globals (`SHEETDB_USE_ACTIVE_SPREADSHEET`, `SHEETDB_SPREADSHEET_URL`, `SHEETDB_SHEET_NAMES`, `SHEETDB_ROW_NUMBERS`, `SHEETDB_ROW_INDEXES`).
+- `sheetdb.service.js` (superseded by `gas-sheetdb.class.js`).
 
 ---
 
