@@ -117,18 +117,34 @@ class _GasSheetDbTable {
    * Read all rows as objects.
    * Adds runtime metadata to each entry.
    *
+   * @param {Object} [options]
+   * @param {boolean} [options.withTrashed = false]
+   * @param {boolean} [options.onlyTrashed = false]
+   *
    * @returns {Object[]}
    */
-  find() {
+  find(options = {}) {
+    const { withTrashed = false, onlyTrashed = false } = options;
+
     return this._withLock(() => {
       this._ensureRequiredMetadata();
 
       const data = this._getTableBodyData();
 
+      const isTrashedColIndex = this._getColumnIndex(
+        _GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED,
+      );
+
       const entries = [];
 
       for (let dataIndex = 0; dataIndex < data.length; dataIndex++) {
         const row = data[dataIndex];
+
+        // handle `onlyTrashed = true`
+        if (onlyTrashed && !row[isTrashedColIndex]) continue;
+
+        // handle `withTrashed = false`
+        if (!onlyTrashed && !withTrashed && row[isTrashedColIndex]) continue;
 
         const entry = this._decodeRow(row);
 
@@ -157,6 +173,21 @@ class _GasSheetDbTable {
    */
   findOneWhere(predicateFn) {
     return this.find().find(predicateFn) || null;
+  }
+
+  /**
+   * Find trashed entries.
+   * Optionally, filter trashed entries.
+   *
+   * @param {(entry: Object) => boolean} [predicateFn = null] // Optional filter.
+   * @returns {Object[]}
+   */
+  findTrashed(predicateFn = null) {
+    if (predicateFn) {
+      return this.find({ onlyTrashed: true }).filter(predicateFn);
+    }
+
+    return this.find({ onlyTrashed: true });
   }
 
   // =========================
@@ -270,6 +301,58 @@ class _GasSheetDbTable {
         this._decodeRow(data[rowIndex]),
       );
     });
+  }
+
+  // =========================
+  // SOFT DELETE
+  // =========================
+
+  /**
+   * Soft delete a single entry.
+   * Requires `_id`.
+   *
+   * @param {Object} entry
+   * @returns {Object} - The deleted entry
+   */
+  softDelete(entry) {
+    return this.softDeleteMany([entry])[0];
+  }
+
+  /**
+   * Soft delete multiple existing entries.
+   * Requires `_id` for each entry.
+   *
+   * @param {Object[]} entries
+   * @returns {Object[]} - The deleted entries
+   */
+  softDeleteMany(entries) {
+    entries.forEach((e) => (e[_GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED] = true));
+
+    return this.updateMany(entries);
+  }
+
+  /**
+   * Restore a single soft-deleted entry.
+   * Requires `_id`.
+   *
+   * @param {Object} entry
+   * @returns {Object} - The restored entry
+   */
+  restore(entry) {
+    return this.restoreMany([entry])[0];
+  }
+
+  /**
+   * Restore multiple soft-deleted entries.
+   * Requires `_id` for each entry.
+   *
+   * @param {Object[]} entries
+   * @returns {Object[]} - The restored entries
+   */
+  restoreMany(entries) {
+    entries.forEach((e) => (e[_GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED] = false));
+
+    return this.updateMany(entries);
   }
 
   // =========================
@@ -545,6 +628,9 @@ class _GasSheetDbTable {
     const updatedAtColIndex = this._getColumnIndex(
       _GAS_SHEETDB_SYSTEM_FIELDS.UPDATED_AT,
     );
+    const isTrashedColIndex = this._getColumnIndex(
+      _GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED,
+    );
 
     const now = new Date();
 
@@ -554,6 +640,10 @@ class _GasSheetDbTable {
       if (!data[i][createdAtColIndex]) data[i][createdAtColIndex] = now;
 
       if (!data[i][updatedAtColIndex]) data[i][updatedAtColIndex] = now;
+
+      if (typeof data[i][isTrashedColIndex] !== 'boolean') {
+        data[i][isTrashedColIndex] = false;
+      }
     }
 
     this._setTableBodyData(data);

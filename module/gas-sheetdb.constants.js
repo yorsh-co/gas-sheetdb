@@ -5,6 +5,7 @@ const _GAS_SHEETDB_SYSTEM_FIELDS = Object.freeze({
   ID: '_id',
   CREATED_AT: '_createdAt',
   UPDATED_AT: '_updatedAt',
+  IS_DELETED: '_isDeleted',
 });
 
 /**
