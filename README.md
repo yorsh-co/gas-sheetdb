@@ -168,7 +168,13 @@ Add the required spreadsheet scope to the parent project's `appsscript.json`.
 
 See the [Scopes](#scopes) section above.
 
-#### 3. Declare a GasSheetDb instance with your configuration
+#### 3. If needed, move `gas-sheetdb` files to the start of the execution order.
+
+This is required for declaring a `GasSheetDb` instance at runtime, as a global variable or inside an IIFE.
+
+See the [Configure the file push order](#6-configure-the-file-push-order) section for details.
+
+#### 4. Declare a GasSheetDb instance with your configuration
 
 ```js
 const sheetDb = new GasSheetDb({
@@ -177,7 +183,7 @@ const sheetDb = new GasSheetDb({
 });
 ```
 
-#### 4. Create or link a table
+#### 5. Create or link a table
 
 ```js
 const myTable = sheetDb.table({
@@ -234,19 +240,47 @@ This creates:
 src/lib/gas-sheetdb/
 ```
 
-#### 6. Push local files to Apps Script
+#### 6. Configure the file push order
+
+Apps Script executes files by the order in the Apps Script editor, from top to bottom. By default, `clasp push` orders the files alphabetically, by file name. If a `GasSheetDb` instance is declared at runtime (as a global variable or in an IIFE) in file referencing `GasSheetDb` that is ordered before `gas-sheetdb`'s own files, `clasp push` will succeed but running the project will throw:
+
+```txt
+ReferenceError: GasSheetDb is not defined
+```
+
+To avoid this, add a [`filePushOrder`](https://github.com/google/clasp#filepushorder-optional) entry to your project's `.clasp.json` that pushes `gas-sheetdb`'s module files ahead of any file that references them:
+
+```json
+{
+  "filePushOrder": [
+    "src/lib/gas-sheetdb/module/gas-sheetdb.constants.js",
+    "src/lib/gas-sheetdb/module/gas-sheetdb.codec.js",
+    "src/lib/gas-sheetdb/module/gas-sheetdb.schema.js",
+    "src/lib/gas-sheetdb/module/gas-sheetdb.table.js",
+    "src/lib/gas-sheetdb/module/gas-sheetdb.class.js",
+    "src/lib/gas-sheetdb/module/gas-sheetdb.types.js"
+  ]
+}
+```
+
+Alternatively, you can manually move these files to the top of the file list in the Apps Script editor.
+
+> **Note:**
+> Any file in your own project that constructs a `GasSheetDb` instance (e.g. `config = new GasSheetDb({ ... })`) must be pushed _after_ the entries above.
+
+#### 7. Push local files to Apps Script
 
 ```bash
 clasp push
 ```
 
-### 7. Configure Apps Script scopes
+#### 8. Configure Apps Script scopes
 
 Add the required spreadsheet scope to the parent project's `appsscript.json`.
 
 See the [Scopes](#scopes) section above.
 
-#### 8. Declare a GasSheetDb instance with your configuration
+#### 9. Declare a GasSheetDb instance with your configuration
 
 ```js
 const sheetDb = new GasSheetDb({
@@ -255,7 +289,7 @@ const sheetDb = new GasSheetDb({
 });
 ```
 
-#### 9. Create or link a table
+#### 10. Create or link a table
 
 ```js
 const myTable = sheetDb.table({
@@ -459,11 +493,11 @@ Constructor options:
 
 ```js
 new GasSheetDb({
-  spreadsheet,        // or
-  spreadsheetUrl,     // or
-  spreadsheetId,      // or
+  spreadsheet, // or
+  spreadsheetUrl, // or
+  spreadsheetId, // or
   useActiveSpreadsheet,
-  rowNumbers,         // optional instance-wide default
+  rowNumbers, // optional instance-wide default
 });
 ```
 
