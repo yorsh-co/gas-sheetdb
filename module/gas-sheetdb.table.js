@@ -360,7 +360,7 @@ class _GasSheetDbTable {
   // =========================
 
   /**
-   * Delete a single entry.
+   * Permanently delete a single entry.
    * Requires `_id`.
    *
    * @param {Object} entry
@@ -370,7 +370,7 @@ class _GasSheetDbTable {
   }
 
   /**
-   * Delete multiple existing entries.
+   * Permanently delete multiple existing entries.
    * Requires `_id` for each entry.
    *
    * @param {Object[]} entries
