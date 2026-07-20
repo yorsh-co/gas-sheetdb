@@ -33,6 +33,14 @@
 
 ---
 
+## [0.1.2] - 2026-07-16
+
+### Fixed
+
+- add missing return operator to `find()`
+
+---
+
 ## [0.1.1] - 2026-07-15
 
 ### Fixed
