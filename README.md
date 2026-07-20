@@ -8,7 +8,7 @@
 
 `gas-sheetdb` uses Apps Script's `SpreadsheetApp` to turn sheets in a Google Spreadsheet into tables that store object entries as rows.
 
-Entries can be queried and updated through `SheetDb` using methods like `find`, `insert`, `update` and `delete`.
+Entries can be queried and updated through a `GasSheetDb` instance using ORM-like methods such as `find`, `insert`, `update`, `softDelete`, `restore` and `delete`.
 
 > **Disclaimer:**
 > This project and [Yorsh](https://github.com/yorsh-co) are independent and are not affiliated with, endorsed by, or associated with Google LLC.
@@ -17,9 +17,13 @@ Entries can be queried and updated through `SheetDb` using methods like `find`, 
 
 - Store object entries as rows in sheets
 - Query entries using methods like find, findWhere, and findOneWhere
-- Insert, update and delete entries using plain JavaScript objects
+- Insert, update, soft delete, restore and permanently delete entries using plain JavaScript objects
+- Write operations return the persisted entries, including the generated metadata
 - Automatically creates missing columns when new properties appear during inserts or updates
-- Automatically adds `_id`, `_createdAt`, and `_updatedAt` fields to new entries
+- Automatically adds `_id`, `_createdAt`, `_updatedAt`, and `_isDeleted` metadata fields to new entries
+- Automatically mutates the metadata properties of entries passed to write operations
+- Returns the full entry object after partial updates
+- Instance-based API — configure spreadsheet source and row numbers per instance, with per-table overrides
 - Objects and arrays are JSON serialized
 - Accepts new entries inserted manually to the spreadsheet
 - Supports both bound and standalone spreadsheets
@@ -30,7 +34,8 @@ Entries can be queried and updated through `SheetDb` using methods like `find`, 
 
 ```js
 // Create a new user
-const usersTable = SheetDb.table(SHEETDB_SHEET_NAMES.USERS);
+const sheetDb = new GasSheetDb();
+const usersTable = sheetDb.table({ sheetName: '👤 Users' });
 
 usersTable.insert({
   name: 'John',
@@ -48,10 +53,20 @@ admins.forEach((admin) => {
 
 usersTable.updateMany(admins);
 
-// Delete users
+// Soft delete
 const revoked = usersTable.findWhere((user) => user.access === 'revoked');
 
-usersTable.deleteMany(revoked);
+usersTable.softDeleteMany(revoked);
+
+// Restore
+const usersToRestore = usersTable.findTrashed((user) => user.project ===='projectA1');
+
+usersTable.restoreMany(usersToRestore);
+
+// Permanently delete
+const usersToDelete =usersTable.findTrashed((user) => user.project ===='projectB1');
+
+usersTable.deleteMany(usersToDelete);
 ```
 
 ## Requirements
@@ -62,10 +77,10 @@ usersTable.deleteMany(revoked);
 
 Use the scope that matches the [spreadsheet access mode](#spreadsheet-access-modes) being used:
 
-| Mode                          | Scope                                                        |
-| ----------------------------- | ------------------------------------------------------------ |
-| Bound spreadsheet mode        | `"https://www.googleapis.com/auth/spreadsheets.currentonly"` |
-| Explicit spreadsheet URL mode | `"https://www.googleapis.com/auth/spreadsheets"`             |
+| Mode                      | Scope                                                        |
+| ------------------------- | ------------------------------------------------------------ |
+| Active spreadsheet mode   | `"https://www.googleapis.com/auth/spreadsheets.currentonly"` |
+| Explicit spreadsheet mode | `"https://www.googleapis.com/auth/spreadsheets"`             |
 
 ### Example `appsscript.json`
 
@@ -84,33 +99,59 @@ Use the scope that matches the [spreadsheet access mode](#spreadsheet-access-mod
 
 ## Spreadsheet Access Modes
 
-`gas-sheetdb` supports two spreadsheet access modes.
+`gas-sheetdb` resolves its spreadsheet from the option passed to the `GasSheetDb` constructor.
 
-### Bound Spreadsheet Mode
+### Active Spreadsheet Mode
 
-Uses the spreadsheet attached to the Apps Script project.
-
-```js
-const SHEETDB_USE_ACTIVE_SPREADSHEET = true;
-```
-
-Use this mode for container-bound scripts.
-
-### Explicit Spreadsheet URL Mode
-
-Uses a spreadsheet by URL.
+Uses the active spreadsheet attached to the Apps Script project.
 
 ```js
-const SHEETDB_USE_ACTIVE_SPREADSHEET = false;
-
-const SHEETDB_SPREADSHEET_URL = 'https://docs.google.com/spreadsheets/d/...';
+const sheetDb = new GasSheetDb({ useActiveSpreadsheet: true });
 ```
+
+Use this mode for spreadsheet [container-bound scripts](https://developers.google.com/apps-script/guides/bound).
+
+> **Note:** `GasSheetDb` defaults to the active spreadsheet mode if no argument is passed to the class constructor.
+
+### Explicit Spreadsheet Mode
+
+Uses the spreadsheet indicated by the `spreadsheet`, `spreadsheetUrl` or `spreadsheetId` options. Examples below.
 
 Use this mode for:
 
 - standalone Apps Script projects requiring persistent storage
 - storing data used by multiple projects
 - storing data for a project bound to a different spreadsheet, form or document
+
+#### Using the `spreadsheet` option
+
+```js
+const mySpreadsheet = SpreadsheetApp.create('My Spreadsheet');
+
+const sheetDb = new GasSheetDb({
+  spreadsheet: mySpreadsheet,
+});
+```
+
+#### Using the `spreadsheetUrl` option
+
+```js
+const mySpreadsheetUrl = 'https://docs.google.com/spreadsheets/d/...';
+
+const sheetDb = new GasSheetDb({
+  spreadsheetUrl: mySpreadsheetUrl,
+});
+```
+
+#### Using the `spreadsheetId` option
+
+```js
+const mySpreadsheetId = '1a2b3c...';
+
+const sheetDb = new GasSheetDb({
+  spreadsheetId: mySpreadsheetId,
+});
+```
 
 ## Quick Start
 
@@ -138,44 +179,30 @@ src/lib/gas-sheetdb/
 
 Add the required spreadsheet scope to the parent project's `appsscript.json`.
 
-See the [Required Apps Script Scopes](#required-apps-script-scopes) section above.
+See the [Scopes](#scopes) section above.
 
-#### 3. Review the library configurations
+#### 3. If needed, move `gas-sheetdb` files to the start of the execution order.
 
-Example `sheetdb.config.js`:
+This is required for declaring a `GasSheetDb` instance at runtime, as a global variable or inside an IIFE.
+
+See the [Configure the file push order](#6-configure-the-file-push-order) section for details.
+
+#### 4. Declare a GasSheetDb instance with your configuration
 
 ```js
-/**
- * Use the spreadsheet bound to the Apps Script project.
- * When false, `SHEETDB_SPREADSHEET_URL` is used instead.
- */
-const SHEETDB_USE_ACTIVE_SPREADSHEET = true;
-
-/**
- * Spreadsheet URL used when
- * `SHEETDB_USE_ACTIVE_SPREADSHEET` is false.
- */
-const SHEETDB_SPREADSHEET_URL = '';
-
-/**
- * Known sheet names.
- */
-const SHEETDB_SHEET_NAMES = Object.freeze({
-  SYSTEM: Object.freeze({
-    CONFIG: '.config',
-    ERRORS: '.errors',
-  }),
-
-  USERS: '👤 Users',
+const sheetDb = new GasSheetDb({
+  useActiveSpreadsheet: true, // or spreadsheet / spreadsheetUrl / spreadsheetId
+  rowNumbers: { columnKeys: 2, firstData: 3 }, // optionally, set your own row configuration. Defaults to `{ columnKeys: 1, firstData: 2 }`
 });
+```
 
-/**
- * Sheet row numbers.
- */
-const SHEETDB_ROW_NUMBERS = {
-  headers: 1,
-  firstData: 2,
-};
+#### 5. Create or link a table
+
+```js
+const myTable = sheetDb.table({
+  sheetName: 'My Table',
+  rowNumbers: { columnKeys: 3, firstData: 4 }, // optionally, set a table-specific row configuration that takes precedence over the `sheetDb` row configuration
+});
 ```
 
 ## Setup instructions with `clasp`
@@ -226,62 +253,82 @@ This creates:
 src/lib/gas-sheetdb/
 ```
 
-#### 6. Push local files to Apps Script
+#### 6. Configure the file push order
+
+Apps Script executes files by the order in the Apps Script editor, from top to bottom. By default, `clasp push` orders the files alphabetically, by file name. If a `GasSheetDb` instance is declared at runtime (as a global variable or in an IIFE) in file referencing `GasSheetDb` that is ordered before `gas-sheetdb`'s own files, `clasp push` will succeed but running the project will throw:
+
+```txt
+ReferenceError: GasSheetDb is not defined
+```
+
+To avoid this, add a [`filePushOrder`](https://github.com/google/clasp#filepushorder-optional) entry to your project's `.clasp.json` that pushes `gas-sheetdb`'s module files ahead of any file that references them:
+
+```json
+{
+  "filePushOrder": [
+    "src/lib/gas-sheetdb/module/gas-sheetdb.constants.js",
+    "src/lib/gas-sheetdb/module/gas-sheetdb.codec.js",
+    "src/lib/gas-sheetdb/module/gas-sheetdb.schema.js",
+    "src/lib/gas-sheetdb/module/gas-sheetdb.table.js",
+    "src/lib/gas-sheetdb/module/gas-sheetdb.class.js",
+    "src/lib/gas-sheetdb/module/gas-sheetdb.types.js"
+  ]
+}
+```
+
+Alternatively, you can manually move these files to the top of the file list in the Apps Script editor.
+
+> **Note:**
+> Any file in your own project that constructs a `GasSheetDb` instance (e.g. `config = new GasSheetDb({ ... })`) must be pushed _after_ the entries above.
+
+#### 7. Push local files to Apps Script
 
 ```bash
 clasp push
 ```
 
-### 7. Configure Apps Script scopes
+#### 8. Configure Apps Script scopes
 
 Add the required spreadsheet scope to the parent project's `appsscript.json`.
 
-See the [Required Apps Script Scopes](#required-apps-script-scopes) section above.
+See the [Scopes](#scopes) section above.
 
-### 8. Review the library configurations
-
-Example `sheetdb.config.js`:
+#### 9. Declare a GasSheetDb instance with your configuration
 
 ```js
-/**
- * Use the spreadsheet bound to the Apps Script project.
- * When false, `SHEETDB_SPREADSHEET_URL` is used instead.
- */
-const SHEETDB_USE_ACTIVE_SPREADSHEET = true;
-
-/**
- * Spreadsheet URL used when
- * `SHEETDB_USE_ACTIVE_SPREADSHEET` is false.
- */
-const SHEETDB_SPREADSHEET_URL = '';
-
-/**
- * Known sheet names.
- */
-const SHEETDB_SHEET_NAMES = Object.freeze({
-  SYSTEM: Object.freeze({
-    CONFIG: '.config',
-    ERRORS: '.errors',
-  }),
-
-  USERS: '👤 Users',
+const sheetDb = new GasSheetDb({
+  useActiveSpreadsheet: true, // or spreadsheet / spreadsheetUrl / spreadsheetId
+  rowNumbers: { columnKeys: 2, firstData: 3 }, // optionally, set your own row configuration. Defaults to `{ columnKeys: 1, firstData: 2 }`
 });
+```
 
-/**
- * Sheet row numbers.
- */
-const SHEETDB_ROW_NUMBERS = {
-  headers: 1,
-  firstData: 2,
-};
+#### 10. Create or link a table
+
+```js
+const myTable = sheetDb.table({
+  sheetName: 'My Table',
+  rowNumbers: { columnKeys: 3, firstData: 4 }, // optionally, set a table-specific row configuration that takes precedence over the `sheetDb` row configuration
+});
 ```
 
 ## Basic Usage
 
+### Create a `GasSheetDb` instance
+
+```js
+const sheetDb = new GasSheetDb({
+  spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/...', // or spreadsheet / spreadsheetId / useActiveSpreadsheet
+  rowNumbers: { columnKeys: 2, firstData: 3 }, // optionally, set your own row configuration. Defaults to `{ columnKeys: 1, firstData: 2 }`
+});
+```
+
 ### Create a Table
 
 ```js
-const usersTable = SheetDb.table(SHEETDB_SHEET_NAMES.USERS);
+const usersTable = sheetDb.table({
+  sheetName: '👤 Users',
+  rowNumbers: { columnKeys: 3, firstData: 4 }, // for example, accommodate for a custom header in rows 1 and 2
+});
 ```
 
 ### Insert an Entry
@@ -312,7 +359,7 @@ usersTable.insertMany([
 ```
 
 > **Note:**
-> `insert` and `insertMany` mutate the entry objects passed in, adding `_id`, `_createdAt`, and `_updatedAt` in place.
+> `insert` and `insertMany` mutate the entry objects passed in, adding `_id`, `_createdAt`, `_updatedAt` and `_isDeleted` in place.
 
 ### Read All Entries
 
@@ -323,16 +370,43 @@ const users = usersTable.find();
 ### Filter Entries
 
 ```js
-const admins = usersTable.findWhere((entry) => entry.role === 'admin');
+const admins = usersTable.findWhere((user) => user.role === 'admin');
 ```
 
 ### Find a Single Entry
 
 ```js
-const user = usersTable.findOneWhere((entry) => entry._id === 'abc123');
+const user = usersTable.findOneWhere((user) => user._id === 'abc123');
+```
+
+> **Note:**
+> The `find`, `findWhere` and `findOneWhere` methods exclude soft-deleted entries by default.
+
+### Find Deleted Entries
+
+```js
+// return all soft-deleted entries
+const deletedUsers = usersTable.findTrashed();
+
+// optionally filter soft-deleted entries
+const deletedUsers = usersTable.findTrashed((user) => user._id === 'abc123');
+
+// also supported
+const deletedUsers = usersTable.find({ onlyTrashed: true });
+```
+
+### Find Active and Deleted Entries
+
+```js
+const allUsers = usersTable.find({ withTrashed: true });
 ```
 
 ### Update an Entry
+
+> **Note:**
+> The `update` and `updateMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
+>
+> Both methods mutate the metadata of the entry objects passed in the argument and also return the full entry object(s) after mutation.
 
 ```js
 const user = usersTable.findOneWhere(
@@ -346,6 +420,11 @@ usersTable.update(user);
 
 ### Update Multiple Entries
 
+> **Note:**
+> The `update` and `updateMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
+>
+> Both methods mutate the metadata of the entry objects passed in the argument and also return the full entry object(s) after mutation.
+
 ```js
 const users = usersTable.findWhere((entry) => entry.role === 'editor');
 
@@ -356,15 +435,86 @@ users.forEach((user) => {
 usersTable.updateMany(users);
 ```
 
+### Partial Update
+
 > **Note:**
-> The `update` and `updateMany` methods currently only accepts entries that were returned from the `find`, `findWhere` or `findOneWhere` and updated in runtime. Updating entries without the original `_id` property included the payload is not currently supported.
+> As long as the object contains original `_id` property returned by one of the `find...()` methods, `update` and `updateMany` can accept partial entries.
 >
-> Both methods mutate the entry objects passed in — `_updatedAt` is overwritten in place. If you need the pre-update value, copy it before calling `update`/`updateMany`.
+> Both methods return the full entry object(s) after mutation.
 
-### Delete an Entry
+```js
+const oldUser = usersTable.findOneWhere(
+  (entry) => entry.email === 'john@email.com',
+);
+
+const userRoleConfig = {
+  _id: user._id,
+  role: 'editor',
+};
+
+const updatedUser = usersTable.update(userRoleConfig); // returns the full entry
+```
+
+### Soft Delete an Entry
 
 > **Note:**
-> The `delete` and `deleteMany` methods currently only accepts entries that were returned from the `find`, `findWhere` or `findOneWhere`. Deleting entries without the original `_id` property included the payload is not currently supported.
+> The `softDelete` and `softDeleteMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
+>
+> Both methods mutate the metadata of the entry objects passed in the argument and also return the full entry object(s) after mutation.
+
+```js
+const user = usersTable.findOneWhere(
+  (entry) => entry.email === 'john@email.com',
+);
+
+usersTable.softDelete(user);
+```
+
+### Soft Delete Multiple Entries
+
+> **Note:**
+> The `softDelete` and `softDeleteMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
+>
+> Both methods mutate the metadata of the entry objects passed in the argument and also return the full entry object(s) after mutation.
+
+```js
+const users = usersTable.findWhere((entry) => entry.access === 'revoked');
+
+usersTable.softDeleteMany(users);
+```
+
+### Restore an Entry
+
+> **Note:**
+> The `restore` and `restoreMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
+>
+> Both methods mutate the metadata of the entry objects passed in the argument and also return the full entry object(s) after mutation.
+
+```js
+const user = usersTable.findTrashed(
+  (entry) => entry.email === 'john@email.com',
+)[0]; // `findTrashed` returns an array of entries
+
+usersTable.restore(user);
+```
+
+### Restore Multiple Entries
+
+> **Note:**
+> The `restore` and `restoreMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
+>
+> Both methods mutate the metadata of the entry objects passed in the argument and also return the full entry object(s) after mutation.
+
+```js
+const users = usersTable.findTrashed((entry) => entry.access === 'renewed');
+
+usersTable.restoreMany(users);
+```
+
+### Permanently Delete an Entry
+
+> **Note:**
+> The `delete` and `deleteMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
 
 ```js
 const user = usersTable.findOneWhere(
@@ -374,10 +524,10 @@ const user = usersTable.findOneWhere(
 usersTable.delete(user);
 ```
 
-### Delete Multiple Entries
+### Permanently Delete Multiple Entries
 
 > **Note:**
-> The `delete` and `deleteMany` methods currently only accepts entries that were returned from the `find`, `findWhere` or `findOneWhere`. Deleting entries without the original `_id` property included the payload is not currently supported.
+> The `delete` and `deleteMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
 
 ```js
 const users = usersTable.findWhere((entry) => entry.access === 'revoked');
@@ -412,8 +562,23 @@ New entries automatically receive:
   _id: 'uuid',
   _createdAt: Date,
   _updatedAt: Date,
+  _isDeleted: boolean
 }
 ```
+
+> **Note:** All metadata properties are managed automatically and should not normally be modified directly.
+
+### Entry Lifecycle
+
+Entries normally exist in one of two states:
+
+- active
+- soft deleted
+
+Soft-deleted entries remain stored in the sheet and can be restored later.
+They are excluded from `find()` by default.
+
+Permanent deletion removes rows from the spreadsheet entirely.
 
 ### Manual inserts
 
@@ -446,25 +611,42 @@ Values are automatically decoded when reading rows.
 
 ### Entry Point
 
-#### SheetDb
+#### GasSheetDb
 
 Main entry point for the library.
 
-Methods:
+Constructor options:
 
 ```js
-SheetDb.getSpreadsheet();
-SheetDb.table(sheetName);
+new GasSheetDb({
+  spreadsheet, // or
+  spreadsheetUrl, // or
+  spreadsheetId, // or
+  useActiveSpreadsheet,
+  rowNumbers, // optional instance-wide default
+});
 ```
 
-#### Table instance returned by SheetDb.table(...)
+The resolved spreadsheet is available as sheetDb.spreadsheet.
+
+##### Methods
+
+```js
+GasSheetDb(...).table({ sheetName, rowNumbers });
+```
+
+#### Table instance returned by GasSheetDb.table(...)
 
 Query Methods:
 
 ```js
-find();
-findWhere(predicateFn);
-findOneWhere(predicateFn);
+find({
+  withTrashed: boolean, // optional
+  onlyTrashed: boolean, // optional
+}); // hides deleted entries by default
+findWhere(predicateFn); // hides deleted entries by default
+findOneWhere(predicateFn); // hides deleted entries by default
+findTrashed(predicateFn); // `predicateFn` is optional for `findTrashed()`
 ```
 
 Insert Methods:
@@ -481,46 +663,65 @@ update(entry);
 updateMany(entries);
 ```
 
-Delete Methods:
+Deletion Methods:
 
 ```js
+softDelete(entry);
+softDeleteMany(entry);
+
+restore(entry);
+restoreMany(entries);
+
 delete(entry);
 deleteMany(entries);
 ```
+
+> **Note:** All write operations mutate the original object [metadata](#metadata) and also return the persisted entry(ies). This keeps the in-memory instance up to date with the persisted state, while also allowing for partial entries to be passed to the write operation methods as long as the original entry `_id` property is included.
 
 ### Example Workflow
 
 ```js
 // Create a new user
-const users = SheetDb.table(SHEETDB_SHEET_NAMES.USERS);
+const sheetDb = new GasSheetDb();
+const usersTable = sheetDb.table({ sheetName: '👤 Users' });
 
-users.insert({
+usersTable.insert({
   name: 'John',
   role: 'admin',
   permissions: ['users:read', 'users:write'],
 });
 
 // Filter users
-const admins = users.findWhere((user) => user.role === 'admin');
+const admins = usersTable.findWhere((user) => user.role === 'admin');
 
 // Update users
 admins.forEach((admin) => {
   admin.lastSeenAt = new Date();
 });
 
-users.updateMany(admins);
+usersTable.updateMany(admins);
 
-// Delete users
+// Soft delete
 const revoked = usersTable.findWhere((user) => user.access === 'revoked');
 
-usersTable.deleteMany(revoked);
+usersTable.softDeleteMany(revoked);
+
+// Restore
+const usersToRestore = usersTable.findTrashed((user) => user.project ===='projectA1');
+
+usersTable.restoreMany(usersToRestore);
+
+// Permanently delete
+const usersToDelete =usersTable.findTrashed((user) => user.project ===='projectB1');
+
+usersTable.deleteMany(usersToDelete);
 ```
 
 ## Planned features
 
 - Catch entry failures
 - Support transactions
-- Support separate row configurations for different tables
+- Support pagination in `find` to avoid loading the entire table to memory when not required
 
 ## License
 

@@ -1,8 +1,43 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+---
 
-The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+## [1.0.0] - 2026-07-20
+
+### Added
+
+- Soft delete support via `softDelete`, `softDeleteMany`, `restore`, `restoreMany`, and `findTrashed`
+- `find()` now supports `{ withTrashed: true }` and `{ onlyTrashed: true }` for querying soft-deleted entries
+- Automatic `_isDeleted` metadata field, including backfilling existing rows that predate soft-delete support
+
+### Changed
+
+- **BREAKING:** `SheetDb` singleton replaced by an instantiable `GasSheetDb` class. Replace `SheetDb.table(name)` with `new GasSheetDb(options).table({ sheetName })`.
+- Spreadsheet source is now resolved explicitly per instance via `spreadsheet`, `spreadsheetUrl`, `spreadsheetId`, or `useActiveSpreadsheet` — passing more than one throws instead of falling back to a silent priority order.
+- Row configuration (`columnKeys`/`firstData`) is now set via constructor/table options instead of a global config file, with instance-level defaults overridable per table.
+- Renamed internal "headers" terminology to "columnKeys" throughout (schema and table classes) for clarity.
+- `find()` now excludes soft-deleted entries by default
+- `insert`, `insertMany`, `update`, and `updateMany` now return the persisted entries after write operations, including generated metadata and stored values
+- `delete` and `deleteMany` now explicitly represent permanent deletion, complementing the new soft-delete workflow
+
+### Removed
+
+- `sheetdb.config.js` and its module-level globals (`SHEETDB_USE_ACTIVE_SPREADSHEET`, `SHEETDB_SPREADSHEET_URL`, `SHEETDB_SHEET_NAMES`, `SHEETDB_ROW_NUMBERS`, `SHEETDB_ROW_INDEXES`).
+- `sheetdb.service.js` (superseded by `gas-sheetdb.class.js`).
+
+### Documentation
+
+- Documented the soft-delete lifecycle, including querying, restoring, and permanently deleting entries
+- Documented the new `find()` query options for including or filtering soft-deleted entries
+- Clarified that write operations return the persisted entries
+
+---
+
+## [0.1.2] - 2026-07-16
+
+### Fixed
+
+- add missing return operator to `find()`
 
 ---
 
