@@ -640,12 +640,10 @@ GasSheetDb(...).table({ sheetName, rowNumbers });
 Query Methods:
 
 ```js
-find(
-  {
-    withTrashed: boolean, // optional
-    onlyTrashed: boolean // optional
-   }
-); // hides deleted entries by default
+find({
+  withTrashed: boolean, // optional
+  onlyTrashed: boolean, // optional
+}); // hides deleted entries by default
 findWhere(predicateFn); // hides deleted entries by default
 findOneWhere(predicateFn); // hides deleted entries by default
 findTrashed(predicateFn); // `predicateFn` is optional for `findTrashed()`
@@ -723,6 +721,7 @@ usersTable.deleteMany(usersToDelete);
 
 - Catch entry failures
 - Support transactions
+- Support pagination in `find` to avoid loading the entire table to memory when not required
 
 ## License
 
