@@ -84,7 +84,7 @@ class _GasSheetDbTable {
 
       let i = 0;
       do {
-        newSheetName = defaultSheetName.replace('{i}', i);
+        newSheetName = defaultSheetName.replace('{i}', i++);
       } while (allSheetNames.includes(newSheetName));
     }
 

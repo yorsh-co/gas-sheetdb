@@ -2,6 +2,14 @@
 
 ---
 
+## [1.0.1] - 2026-07-22
+
+### Fixed
+
+- Add missing sheet name index incrimination to `_insertSheet` in `_GasSheetDbTable` to fix a potential infinite loop.
+
+---
+
 ## [1.0.0] - 2026-07-20
 
 ### Added
