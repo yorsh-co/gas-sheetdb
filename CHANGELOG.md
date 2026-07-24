@@ -2,7 +2,15 @@
 
 ---
 
-## [Unreleased]
+## [1.1.1] - 2026-07-24
+
+### Changed
+
+- Add README.md to .prettierignore to avoid overwriting `delete(entry)` method formatting
+
+---
+
+## [1.1.0] - 2026-07-24
 
 ### Changed
 
