@@ -5,29 +5,23 @@
  * automatic column management, and metadata handling.
  */
 class _GasSheetDbTable {
-  /**
-   * @param {Object} options
-   * @param {GoogleAppsScript.Spreadsheet.Spreadsheet} options.spreadsheet
-   * @param {string|null} [options.sheetName]
-   * @param {GasSheetDbRowsReference} [options.rowNumbers]
-   */
-  constructor({ spreadsheet, sheetName, rowNumbers } = {}) {
-    /** @type {GoogleAppsScript.Spreadsheet.Spreadsheet} */
+  spreadsheet: GoogleAppsScript.Spreadsheet.Spreadsheet;
+  sheetName: string | null;
+  rowNumbers: GasSheetDbRowsReference;
+  rowIndexes: GasSheetDbRowsReference;
+  sheet: GoogleAppsScript.Spreadsheet.Sheet;
+  schema: _GasSheetDbTableSchema;
+
+  constructor({
+    spreadsheet,
+    sheetName = null,
+    rowNumbers,
+  }: GasSheetDbTableConstructorOptions) {
     this.spreadsheet = spreadsheet;
-
-    /** @type {string} */
     this.sheetName = sheetName;
-
-    /** @type {GasSheetDbRowsReference} */
     this.rowNumbers = rowNumbers; // Base-1 row numbers
-
-    /** @type {GasSheetDbRowsReference} */
     this.rowIndexes = this._deriveRowIndexes(); // Base-0 row indexes
-
-    /** @type {GoogleAppsScript.Spreadsheet.Sheet} */
     this.sheet = this._ensureSheet();
-
-    /** @type {_GasSheetDbTableSchema} */
     this.schema = new _GasSheetDbTableSchema(this.sheet, this.rowNumbers);
   }
 
@@ -38,12 +32,11 @@ class _GasSheetDbTable {
   /**
    * Derive base-0 data array row indexes from
    * base-1 spreadsheet row numbers.
-   * @returns {GasSheetDbRowsReference}
    */
-  _deriveRowIndexes() {
-    const rowIndexes = {};
+  private _deriveRowIndexes(): GasSheetDbRowsReference {
+    const rowIndexes = {} as GasSheetDbRowsReference;
     Object.entries(this.rowNumbers).forEach(
-      ([k, v]) => (rowIndexes[k] = v - 1),
+      ([k, v]) => (rowIndexes[k as keyof GasSheetDbRowsReference] = v - 1),
     );
 
     return rowIndexes;
@@ -52,10 +45,8 @@ class _GasSheetDbTable {
   /**
    * Ensure the sheet exists, by returning the existing
    * sheet, or inserting a new one.
-   *
-   * @returns {GoogleAppsScript.SpreadsheetApp.Sheet}
    */
-  _ensureSheet() {
+  private _ensureSheet(): GoogleAppsScript.Spreadsheet.Sheet {
     if (this.sheetName) {
       const sheet = this.spreadsheet.getSheetByName(this.sheetName);
 
@@ -69,10 +60,8 @@ class _GasSheetDbTable {
    * Insert a new sheet to the spreadsheet, using the provided
    * name. Applies basic formatting including alternating
    * row colors and a frozen header row.
-   *
-   * @returns {GoogleAppsScript.SpreadsheetApp.Sheet}
    */
-  _insertSheet() {
+  _insertSheet(): GoogleAppsScript.Spreadsheet.Sheet {
     let newSheetName = this.sheetName;
 
     if (!newSheetName) {
@@ -82,9 +71,9 @@ class _GasSheetDbTable {
 
       const defaultSheetName = 'gsd-table-{i}';
 
-      let i = 0;
+      const i = 0;
       do {
-        newSheetName = defaultSheetName.replace('{i}', i++);
+        newSheetName = defaultSheetName.replace('{i}', String(i));
       } while (allSheetNames.includes(newSheetName));
     }
 
@@ -116,14 +105,8 @@ class _GasSheetDbTable {
   /**
    * Read all rows as objects.
    * Adds runtime metadata to each entry.
-   *
-   * @param {Object} [options]
-   * @param {boolean} [options.withTrashed = false]
-   * @param {boolean} [options.onlyTrashed = false]
-   *
-   * @returns {Object[]}
    */
-  find(options = {}) {
+  find(options: GasSheetDbFindOptions = {}): GasSheetDbEntry[] {
     const { withTrashed = false, onlyTrashed = false } = options;
 
     return this._withLock(() => {
@@ -141,12 +124,12 @@ class _GasSheetDbTable {
         const row = data[dataIndex];
 
         // handle `onlyTrashed = true`
-        if (onlyTrashed && !row[isTrashedColIndex]) continue;
+        if (onlyTrashed && !row?.[isTrashedColIndex]) continue;
 
         // handle `withTrashed = false`
-        if (!onlyTrashed && !withTrashed && row[isTrashedColIndex]) continue;
+        if (!onlyTrashed && !withTrashed && row?.[isTrashedColIndex]) continue;
 
-        const entry = this._decodeRow(row);
+        const entry = this._decodeRow(row || []);
 
         entries.push(entry);
       }
@@ -157,32 +140,29 @@ class _GasSheetDbTable {
 
   /**
    * Filter entries using a predicate.
-   *
-   * @param {(entry: Object) => boolean} predicateFn
-   * @returns {Object[]}
    */
-  findWhere(predicateFn) {
-    return this.find().filter(predicateFn);
+  findWhere(
+    predicateFn: (entry: GasSheetDbEntry) => boolean,
+  ): GasSheetDbEntry[] | null {
+    return this.find().filter(predicateFn) || null;
   }
 
   /**
    * Find the first matching entry.
-   *
-   * @param {(entry: Object) => boolean} predicateFn
-   * @returns {Object|null}
    */
-  findOneWhere(predicateFn) {
+  findOneWhere(
+    predicateFn: (entry: GasSheetDbEntry) => boolean,
+  ): GasSheetDbEntry | null {
     return this.find().find(predicateFn) || null;
   }
 
   /**
    * Find trashed entries.
    * Optionally, filter trashed entries.
-   *
-   * @param {(entry: Object) => boolean} [predicateFn = null] // Optional filter.
-   * @returns {Object[]}
    */
-  findTrashed(predicateFn = null) {
+  findTrashed(
+    predicateFn: ((entry: GasSheetDbEntry) => boolean) | null = null,
+  ): GasSheetDbEntry[] {
     if (predicateFn) {
       return this.find({ onlyTrashed: true }).filter(predicateFn);
     }
@@ -196,36 +176,26 @@ class _GasSheetDbTable {
 
   /**
    * Insert a single entry.
-   *
-   * @param {Object} entry
-   * @returns {Object} - The inserted entry with added metadata
    */
-  insert(entry) {
-    return this.insertMany([entry])[0];
+  insert(entry: GasSheetDbEntry): GasSheetDbEntry {
+    return this.insertMany([entry])[0]!;
   }
 
   /**
    * Insert multiple entries.
    * Missing columns are created automatically.
-   *
-   * @param {Object[]} entries - Mutated in place: `_id`, `_createdAt`,
-   *   and `_updatedAt` are added if not already present.
-   * @returns {Object[]} - The inserted entries with added metadata
    */
-  insertMany(entries) {
+  insertMany(entries: GasSheetDbEntry[]): GasSheetDbEntry[] {
     return this._withLock(() => {
       entries.forEach((entry) => this._applyInsertMetadata(entry));
 
       this.schema.reload();
 
       const columnKeys = this._extractKeys(entries);
-
       this.schema.ensureColumns(columnKeys);
-
       this.schema.reload();
 
       const data = entries.map((entry) => this._buildRow(entry));
-
       this._appendTableBodyData(data);
 
       const insertedEntries = data.map((row) => this._decodeRow(row));
@@ -241,22 +211,16 @@ class _GasSheetDbTable {
   /**
    * Update a single entry.
    * Requires `_id`.
-   *
-   * @param {Object} entry
-   * @returns {Object} - The updated entry
    */
-  update(entry) {
-    return this.updateMany([entry])[0];
+  update(entry: GasSheetDbEntry): GasSheetDbEntry {
+    return this.updateMany([entry])[0]!;
   }
 
   /**
    * Update multiple existing entries.
    * Requires `_id` for each entry.
-   *
-   * @param {Object[]} entries - Mutated in place: `_updatedAt` is overwritten with the current time.
-   * @returns {Object[]} - The updated entries
    */
-  updateMany(entries) {
+  updateMany(entries: GasSheetDbEntry[]): GasSheetDbEntry[] {
     return this._withLock(() => {
       // add new property columns
       this.schema.reload();
@@ -298,7 +262,7 @@ class _GasSheetDbTable {
 
       // return the entries in their post-`_buildRow` state
       return updatedRowIndexes.map((rowIndex) =>
-        this._decodeRow(data[rowIndex]),
+        this._decodeRow(data[rowIndex]!),
       );
     });
   }
@@ -310,22 +274,16 @@ class _GasSheetDbTable {
   /**
    * Soft delete a single entry.
    * Requires `_id`.
-   *
-   * @param {Object} entry
-   * @returns {Object} - The deleted entry
    */
-  softDelete(entry) {
-    return this.softDeleteMany([entry])[0];
+  softDelete(entry: GasSheetDbEntry): GasSheetDbEntry {
+    return this.softDeleteMany([entry])[0]!;
   }
 
   /**
    * Soft delete multiple existing entries.
    * Requires `_id` for each entry.
-   *
-   * @param {Object[]} entries
-   * @returns {Object[]} - The deleted entries
    */
-  softDeleteMany(entries) {
+  softDeleteMany(entries: GasSheetDbEntry[]): GasSheetDbEntry[] {
     entries.forEach((e) => (e[_GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED] = true));
 
     return this.updateMany(entries);
@@ -334,22 +292,16 @@ class _GasSheetDbTable {
   /**
    * Restore a single soft-deleted entry.
    * Requires `_id`.
-   *
-   * @param {Object} entry
-   * @returns {Object} - The restored entry
    */
-  restore(entry) {
-    return this.restoreMany([entry])[0];
+  restore(entry: GasSheetDbEntry): GasSheetDbEntry {
+    return this.restoreMany([entry])[0]!;
   }
 
   /**
    * Restore multiple soft-deleted entries.
    * Requires `_id` for each entry.
-   *
-   * @param {Object[]} entries
-   * @returns {Object[]} - The restored entries
    */
-  restoreMany(entries) {
+  restoreMany(entries: GasSheetDbEntry[]): GasSheetDbEntry[] {
     entries.forEach((e) => (e[_GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED] = false));
 
     return this.updateMany(entries);
@@ -362,20 +314,16 @@ class _GasSheetDbTable {
   /**
    * Permanently delete a single entry.
    * Requires `_id`.
-   *
-   * @param {Object} entry
    */
-  delete(entry) {
+  delete(entry: GasSheetDbEntry): void {
     this.deleteMany([entry]);
   }
 
   /**
    * Permanently delete multiple existing entries.
    * Requires `_id` for each entry.
-   *
-   * @param {Object[]} entries
    */
-  deleteMany(entries) {
+  deleteMany(entries: GasSheetDbEntry[]): void {
     this._withLock(() => {
       // load the current data after schema reload
       const data = this._getTableBodyData();
@@ -413,10 +361,8 @@ class _GasSheetDbTable {
 
   /**
    * Return the table body, without the column keys row.
-   *
-   * @returns {*[][]}
    */
-  _getTableBodyData() {
+  private _getTableBodyData(): GasSheetDbCellValue[][] {
     const data = this.sheet.getDataRange().getValues();
 
     if (!data.length) {
@@ -430,20 +376,18 @@ class _GasSheetDbTable {
 
   /**
    * Write to the entire table body on the sheet.
-   *
-   * @param {*[][]} data
    */
-  _setTableBodyData(data = []) {
-    if (data.length) {
-      const tableBodyRange = this.sheet.getRange(
-        this.rowNumbers.firstData,
-        1,
-        data.length,
-        data[0].length,
-      );
+  private _setTableBodyData(data: GasSheetDbCellValue[][] = []): void {
+    if (!data.length || !data[0]?.length) throw new Error('Empty data');
 
-      tableBodyRange.setValues(data);
-    }
+    const tableBodyRange = this.sheet.getRange(
+      this.rowNumbers.firstData,
+      1,
+      data.length,
+      data[0].length,
+    );
+
+    tableBodyRange.setValues(data);
 
     this._removeExtraRows(data.length);
 
@@ -452,11 +396,9 @@ class _GasSheetDbTable {
 
   /**
    * Append rows to the sheet.
-   *
-   * @param {*[][]} data
    */
-  _appendTableBodyData(data) {
-    if (!data.length) throw new Error('Empty data');
+  private _appendTableBodyData(data: GasSheetDbCellValue[][]): void {
+    if (!data.length || !data[0]?.length) throw new Error('Empty data');
 
     this._ensureBlankRows(data.length);
 
@@ -469,10 +411,8 @@ class _GasSheetDbTable {
 
   /**
    * Ensure the sheet has enough empty rows.
-   *
-   * @param {number} amount
    */
-  _ensureBlankRows(amount) {
+  private _ensureBlankRows(amount: number): void {
     const maxRows = this.sheet.getMaxRows();
 
     const lastRow = this.sheet.getLastRow();
@@ -486,10 +426,8 @@ class _GasSheetDbTable {
 
   /**
    * Remove extra rows from the sheet.
-   *
-   * @param {number} tableBodyLen
    */
-  _removeExtraRows(tableBodyLen) {
+  private _removeExtraRows(tableBodyLen: number): void {
     const lastTableBodyRow = this.rowNumbers.firstData - 1 + tableBodyLen;
 
     const maxRows = this.sheet.getMaxRows();
@@ -503,11 +441,10 @@ class _GasSheetDbTable {
 
   /**
    * Map the row indexes
-   *
-   * @param {*[][]} [tableBody=null]
-   * @returns {Map<string, number>}
    */
-  _mapTableBodyRowIndexesById(tableBody = null) {
+  private _mapTableBodyRowIndexesById(
+    tableBody: GasSheetDbCellValue[][] | null = null,
+  ): Map<string, number> {
     const data = tableBody || this._getTableBodyData();
 
     const idColIndex = this._getColumnIndex(_GAS_SHEETDB_SYSTEM_FIELDS.ID);
@@ -520,8 +457,8 @@ class _GasSheetDbTable {
 
     const rowMap = new Map();
 
-    for (let i = 0; i < data.length; i++) {
-      rowMap.set(data[i][idColIndex], i);
+    for (const [i, row] of data.entries()) {
+      rowMap.set(row[idColIndex], i);
     }
 
     return rowMap;
@@ -533,21 +470,15 @@ class _GasSheetDbTable {
 
   /**
    * Return the base-0 index for column corresponding to the provided key.
-   *
-   * @param {string} key
-   * @returns {number}
    */
-  _getColumnIndex(key) {
+  private _getColumnIndex(key: string): number {
     return this.schema.columnKeys.indexOf(key);
   }
 
   /**
    * Extract the column keys from an entry's property keys.
-   *
-   * @param {Object[]} entries
-   * @returns {string[]}
    */
-  _extractKeys(entries) {
+  private _extractKeys(entries: GasSheetDbEntry[]): string[] {
     return [
       ...new Set(
         entries.flatMap((entry) =>
@@ -563,23 +494,19 @@ class _GasSheetDbTable {
 
   /**
    * Check if a field should be stored in the sheet.
-   *
-   * @param {string} key
-   * @returns {boolean}
    */
-  _isPersistedField(key) {
+  private _isPersistedField(key: string): boolean {
     return !_GAS_SHEETDB_NON_PERSISTED_FIELDS.has(key);
   }
 
   /**
    * Build a sheet row from an entry.
    * Existing values are preserved when a field is undefined.
-   *
-   * @param {Object} entry
-   * @param {Array} existingRow
-   * @returns {Array}
    */
-  _buildRow(entry, existingRow = []) {
+  private _buildRow(
+    entry: GasSheetDbEntry,
+    existingRow: GasSheetDbCellValue[] = [],
+  ) {
     return this.schema.columnKeys.map((key, index) => {
       const value = entry[key];
 
@@ -593,15 +520,12 @@ class _GasSheetDbTable {
 
   /**
    * Decode a raw sheet row into an entry object.
-   *
-   * @param {Array} row
-   * @returns {Object}
    */
-  _decodeRow(row) {
-    const entry = {};
+  private _decodeRow(row: GasSheetDbCellValue[]): GasSheetDbEntry {
+    const entry: GasSheetDbEntry = {};
 
-    this.schema.columnKeys.forEach((key, colIndex) => {
-      entry[key] = _GasSheetDbValueCodec.decode(row[colIndex]);
+    this.schema?.columnKeys?.forEach((key, colIndex) => {
+      entry[key] = _GasSheetDbValueCodec.decode(row[colIndex] || '');
     });
 
     return entry;
@@ -613,7 +537,7 @@ class _GasSheetDbTable {
    * other than table.insert() contain the required metadata for
    * reading and writing with SheetDB.
    */
-  _ensureRequiredMetadata() {
+  private _ensureRequiredMetadata(): void {
     this.schema.ensureColumns(Object.values(_GAS_SHEETDB_SYSTEM_FIELDS));
     this.schema.reload();
 
@@ -634,15 +558,15 @@ class _GasSheetDbTable {
 
     const now = new Date();
 
-    for (let i = 0; i < data.length; i++) {
-      if (!data[i][idColIndex]) data[i][idColIndex] = this._generateId();
+    for (const row of data) {
+      if (!row[idColIndex]) row[idColIndex] = this._generateId();
 
-      if (!data[i][createdAtColIndex]) data[i][createdAtColIndex] = now;
+      if (!row[createdAtColIndex]) row[createdAtColIndex] = now;
 
-      if (!data[i][updatedAtColIndex]) data[i][updatedAtColIndex] = now;
+      if (!row[updatedAtColIndex]) row[updatedAtColIndex] = now;
 
-      if (typeof data[i][isTrashedColIndex] !== 'boolean') {
-        data[i][isTrashedColIndex] = false;
+      if (typeof row[isTrashedColIndex] !== 'boolean') {
+        row[isTrashedColIndex] = false;
       }
     }
 
@@ -655,10 +579,8 @@ class _GasSheetDbTable {
 
   /**
    * Apply system fields for new entries.
-   *
-   * @param {Object} entry
    */
-  _applyInsertMetadata(entry) {
+  private _applyInsertMetadata(entry: GasSheetDbEntry): void {
     const now = new Date();
 
     const keys = _GAS_SHEETDB_SYSTEM_FIELDS;
@@ -676,10 +598,8 @@ class _GasSheetDbTable {
 
   /**
    * Update system timestamps.
-   *
-   * @param {Object} entry
    */
-  _applyUpdateMetadata(entry) {
+  private _applyUpdateMetadata(entry: GasSheetDbEntry): void {
     const keys = _GAS_SHEETDB_SYSTEM_FIELDS;
 
     entry[keys.UPDATED_AT] = new Date();
@@ -687,10 +607,8 @@ class _GasSheetDbTable {
 
   /**
    * Return uuid.
-   *
-   * @returns {string}
    */
-  _generateId() {
+  private _generateId(): string {
     return Utilities.getUuid();
   }
 
@@ -700,11 +618,8 @@ class _GasSheetDbTable {
 
   /**
    * Execute a callback inside a document lock.
-   *
-   * @param {Function} callback
-   * @returns {*}
    */
-  _withLock(callback) {
+  private _withLock<T>(callback: () => T): T {
     const lock = LockService.getDocumentLock();
 
     lock.waitLock(30000);
