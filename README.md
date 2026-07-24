@@ -673,7 +673,7 @@ softDeleteMany(entry);
 restore(entry);
 restoreMany(entries);
 
-delete(entry);
+`delete(entry);`
 deleteMany(entries);
 ```
 
