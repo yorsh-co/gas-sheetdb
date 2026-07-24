@@ -2,11 +2,14 @@
  * Manages sheet column keys and schema updates.
  */
 class _GasSheetDbTableSchema {
-  /**
-   * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
-   * @param {GasSheetDbRowsReference} rowNumbers
-   */
-  constructor(sheet, rowNumbers) {
+  sheet: GoogleAppsScript.Spreadsheet.Sheet;
+  rowNumbers: GasSheetDbRowsReference;
+  columnKeys: string[]; // in practice, will be string[]
+
+  constructor(
+    sheet: GoogleAppsScript.Spreadsheet.Sheet,
+    rowNumbers: GasSheetDbRowsReference,
+  ) {
     this.sheet = sheet;
     this.rowNumbers = rowNumbers;
 
@@ -15,10 +18,8 @@ class _GasSheetDbTableSchema {
 
   /**
    * Load column key values from the sheet.
-   *
-   * @returns {string[]}
    */
-  loadColumnKeys() {
+  loadColumnKeys(): string[] {
     const numCols = this.sheet.getLastColumn();
 
     if (!numCols) {
@@ -29,23 +30,21 @@ class _GasSheetDbTableSchema {
       .getRange(this.rowNumbers.columnKeys, 1, 1, numCols)
       .getValues();
 
-    return values[0];
+    return values[0]!;
   }
 
   /**
    * Reload the column key values from the sheet.
    */
-  reload() {
+  reload(): void {
     this.columnKeys = this.loadColumnKeys();
   }
 
   /**
    * Ensure all column keys exist in the sheet.
    * Missing columns are appended automatically.
-   *
-   * @param {string[]} columnKeys
    */
-  ensureColumns(columnKeys) {
+  ensureColumns(columnKeys: string[]): void {
     const newColumnKeys = columnKeys.filter(
       (key) => !this.columnKeys.includes(key),
     );
@@ -64,7 +63,12 @@ class _GasSheetDbTableSchema {
     }
 
     this.sheet
-      .getRange(this.rowNumbers.columnKeys, lastCol + 1, 1, newColumnKeys.length)
+      .getRange(
+        this.rowNumbers.columnKeys,
+        lastCol + 1,
+        1,
+        newColumnKeys.length,
+      )
       .setValues([newColumnKeys]);
 
     this.columnKeys.push(...newColumnKeys);
