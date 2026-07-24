@@ -11,11 +11,8 @@ const _GasSheetDbValueCodec = (() => {
 
   /**
    * Convert a JS value into a sheet-safe value.
-   *
-   * @param {*} value
-   * @returns {*}
    */
-  const encode = (value) => {
+  const encode = (value: unknown): GasSheetDbCellValue => {
     if (value === undefined || value === null) {
       return '';
     }
@@ -28,16 +25,13 @@ const _GasSheetDbValueCodec = (() => {
       return `${PREFIXES.JSON}${JSON.stringify(value)}`;
     }
 
-    return value;
+    return value as GasSheetDbCellValue;
   };
 
   /**
    * Restore encoded sheet values back into JS values.
-   *
-   * @param {*} value
-   * @returns {*}
    */
-  const decode = (value) => {
+  const decode = (value: GasSheetDbCellValue): unknown => {
     if (typeof value !== 'string') {
       return value;
     }

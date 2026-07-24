@@ -28,6 +28,7 @@ Entries can be queried and updated through a `GasSheetDb` instance using ORM-lik
 - Accepts new entries inserted manually to the spreadsheet
 - Supports both bound and standalone spreadsheets
 - Uses Apps Script `LockService` for safer concurrent writes (full transactions are not yet supported)
+- Written in TypeScript with generated JavaScript distribution
 - No external dependencies beyond built-in Apps Script services
 
 ### Example Usage
@@ -165,7 +166,7 @@ This repository is intended to be added directly into Apps Script projects using
 git subtree add \
   --prefix=src/lib/gas-sheetdb \
   https://github.com/yorsh-co/gas-sheetdb.git \
-  main \
+  dist \
   --squash
 ```
 
@@ -243,7 +244,7 @@ clasp create --type sheets
 git subtree add \
   --prefix=src/lib/gas-sheetdb \
   https://github.com/yorsh-co/gas-sheetdb.git \
-  main \
+  dist \
   --squash
 ```
 
@@ -266,12 +267,12 @@ To avoid this, add a [`filePushOrder`](https://github.com/google/clasp#filepusho
 ```json
 {
   "filePushOrder": [
-    "src/lib/gas-sheetdb/module/gas-sheetdb.constants.js",
-    "src/lib/gas-sheetdb/module/gas-sheetdb.codec.js",
-    "src/lib/gas-sheetdb/module/gas-sheetdb.schema.js",
-    "src/lib/gas-sheetdb/module/gas-sheetdb.table.js",
-    "src/lib/gas-sheetdb/module/gas-sheetdb.class.js",
-    "src/lib/gas-sheetdb/module/gas-sheetdb.types.js"
+    "dist/lib/gas-sheetdb/gas-sheetdb.constants.js",
+    "dist/lib/gas-sheetdb/gas-sheetdb.codec.js",
+    "dist/lib/gas-sheetdb/gas-sheetdb.schema.js",
+    "dist/lib/gas-sheetdb/gas-sheetdb.table.js",
+    "dist/lib/gas-sheetdb/gas-sheetdb.class.js",
+    "dist/lib/gas-sheetdb/gas-sheetdb.types.js"
   ]
 }
 ```
@@ -716,6 +717,12 @@ const usersToDelete =usersTable.findTrashed((user) => user.project ===='projectB
 
 usersTable.deleteMany(usersToDelete);
 ```
+
+## Development
+
+The source code is written in TypeScript.
+
+Release builds are compiled to JavaScript before publishing so the distributed library remains compatible with Google Apps Script.
 
 ## Planned features
 
