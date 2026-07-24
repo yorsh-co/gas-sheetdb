@@ -5,6 +5,6 @@
  * can be restored when reading rows.
  */
 declare const _GasSheetDbValueCodec: Readonly<{
-    encode: (value: unknown) => GasSheetDbCellValue;
-    decode: (value: GasSheetDbCellValue) => unknown;
+  encode: (value: unknown) => GasSheetDbCellValue;
+  decode: (value: GasSheetDbCellValue) => unknown;
 }>;

@@ -1,4 +1,4 @@
-"use strict";
+'use strict';
 /**
  * Encodes complex values for storage in sheets.
  *
@@ -6,43 +6,42 @@
  * can be restored when reading rows.
  */
 const _GasSheetDbValueCodec = (() => {
-    const PREFIXES = Object.freeze({
-        JSON: '__JSON__',
-    });
-    /**
-     * Convert a JS value into a sheet-safe value.
-     */
-    const encode = (value) => {
-        if (value === undefined || value === null) {
-            return '';
-        }
-        if (value instanceof Date) {
-            return value;
-        }
-        if (typeof value === 'object') {
-            return `${PREFIXES.JSON}${JSON.stringify(value)}`;
-        }
-        return value;
-    };
-    /**
-     * Restore encoded sheet values back into JS values.
-     */
-    const decode = (value) => {
-        if (typeof value !== 'string') {
-            return value;
-        }
-        if (value.startsWith(PREFIXES.JSON)) {
-            try {
-                return JSON.parse(value.slice(PREFIXES.JSON.length));
-            }
-            catch (err) {
-                console.error(err);
-            }
-        }
-        return value;
-    };
-    return Object.freeze({
-        encode,
-        decode,
-    });
+  const PREFIXES = Object.freeze({
+    JSON: '__JSON__',
+  });
+  /**
+   * Convert a JS value into a sheet-safe value.
+   */
+  const encode = (value) => {
+    if (value === undefined || value === null) {
+      return '';
+    }
+    if (value instanceof Date) {
+      return value;
+    }
+    if (typeof value === 'object') {
+      return `${PREFIXES.JSON}${JSON.stringify(value)}`;
+    }
+    return value;
+  };
+  /**
+   * Restore encoded sheet values back into JS values.
+   */
+  const decode = (value) => {
+    if (typeof value !== 'string') {
+      return value;
+    }
+    if (value.startsWith(PREFIXES.JSON)) {
+      try {
+        return JSON.parse(value.slice(PREFIXES.JSON.length));
+      } catch (err) {
+        console.error(err);
+      }
+    }
+    return value;
+  };
+  return Object.freeze({
+    encode,
+    decode,
+  });
 })();
