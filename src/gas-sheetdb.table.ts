@@ -11,11 +11,15 @@ class _GasSheetDbTable {
   rowIndexes: GasSheetDbRowsReference;
   sheet: GoogleAppsScript.Spreadsheet.Sheet;
   schema: _GasSheetDbTableSchema;
+  lockScope: GasSheetDbLockScope;
+  lockService: GasSheetDbLockService;
 
   constructor({
     spreadsheet,
     sheetName = null,
     rowNumbers,
+    lockScope,
+    lockService,
   }: GasSheetDbTableConstructorOptions) {
     this.spreadsheet = spreadsheet;
     this.sheetName = sheetName;
@@ -23,6 +27,8 @@ class _GasSheetDbTable {
     this.rowIndexes = this._deriveRowIndexes(); // Base-0 row indexes
     this.sheet = this._ensureSheet();
     this.schema = new _GasSheetDbTableSchema(this.sheet, this.rowNumbers);
+    this.lockScope = lockScope;
+    this.lockService = lockService;
   }
 
   // =========================
@@ -617,17 +623,10 @@ class _GasSheetDbTable {
   // =========================
 
   /**
-   * Execute a callback inside a document lock.
+   * Execute a callback inside this table's configured lock, via whichever
+   * lockService was injected (or the minimal default fallback).
    */
   private _withLock<T>(callback: () => T): T {
-    const lock = LockService.getDocumentLock();
-
-    lock.waitLock(30000);
-
-    try {
-      return callback();
-    } finally {
-      lock.releaseLock();
-    }
+    return this.lockService.withLock(this.lockScope, callback);
   }
 }
