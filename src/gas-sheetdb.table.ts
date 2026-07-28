@@ -396,8 +396,6 @@ class _GasSheetDbTable {
     tableBodyRange.setValues(data);
 
     this._removeExtraRows(data.length);
-
-    SpreadsheetApp.flush();
   }
 
   /**
@@ -411,8 +409,6 @@ class _GasSheetDbTable {
     this.sheet
       .getRange(this.sheet.getLastRow() + 1, 1, data.length, data[0].length)
       .setValues(data);
-
-    SpreadsheetApp.flush();
   }
 
   /**
@@ -625,8 +621,14 @@ class _GasSheetDbTable {
   /**
    * Execute a callback inside this table's configured lock, via whichever
    * lockService was injected (or the minimal default fallback).
+   *
+   * The flush runs inside the lock, resyncing Apps Script's
+   * local spreadsheet model.
    */
-  private _withLock<T>(callback: () => T): T {
-    return this.lockService.withLock(this.lockScope, callback);
+  _withLock<T>(callback: () => T): T {
+    return this.lockService.withLock(this.lockScope, () => {
+      SpreadsheetApp.flush();
+      return callback();
+    });
   }
 }
