@@ -527,7 +527,8 @@ class _GasSheetDbTable {
     const entry: GasSheetDbEntry = {};
 
     this.schema?.columnKeys?.forEach((key, colIndex) => {
-      entry[key] = _GasSheetDbValueCodec.decode(row[colIndex] || '');
+      const raw = row[colIndex];
+      entry[key] = _GasSheetDbValueCodec.decode(raw === undefined ? '' : raw);
     });
 
     return entry;
@@ -590,12 +591,15 @@ class _GasSheetDbTable {
     if (!entry[keys.ID]) {
       entry[keys.ID] = this._generateId();
     }
-
     if (!entry[keys.CREATED_AT]) {
       entry[keys.CREATED_AT] = now;
     }
 
     entry[keys.UPDATED_AT] = now;
+
+    if (typeof entry[keys.IS_DELETED] !== 'boolean') {
+      entry[keys.IS_DELETED] = false;
+    }
   }
 
   /**
