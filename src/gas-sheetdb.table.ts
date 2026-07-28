@@ -628,7 +628,11 @@ class _GasSheetDbTable {
   _withLock<T>(callback: () => T): T {
     return this.lockService.withLock(this.lockScope, () => {
       SpreadsheetApp.flush();
-      return callback();
+
+      const response = callback();
+
+      SpreadsheetApp.flush();
+      return response;
     });
   }
 }
