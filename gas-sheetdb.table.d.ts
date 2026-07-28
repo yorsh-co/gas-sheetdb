@@ -176,6 +176,9 @@ declare class _GasSheetDbTable {
   /**
    * Execute a callback inside this table's configured lock, via whichever
    * lockService was injected (or the minimal default fallback).
+   *
+   * The flush runs inside the lock, resyncing Apps Script's
+   * local spreadsheet model.
    */
-  private _withLock;
+  _withLock<T>(callback: () => T): T;
 }
