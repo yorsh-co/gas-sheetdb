@@ -396,7 +396,8 @@ class _GasSheetDbTable {
   _decodeRow(row) {
     const entry = {};
     this.schema?.columnKeys?.forEach((key, colIndex) => {
-      entry[key] = _GasSheetDbValueCodec.decode(row[colIndex] || '');
+      const raw = row[colIndex];
+      entry[key] = _GasSheetDbValueCodec.decode(raw === undefined ? '' : raw);
     });
     return entry;
   }
@@ -448,6 +449,9 @@ class _GasSheetDbTable {
       entry[keys.CREATED_AT] = now;
     }
     entry[keys.UPDATED_AT] = now;
+    if (typeof entry[keys.IS_DELETED] !== 'boolean') {
+      entry[keys.IS_DELETED] = false;
+    }
   }
   /**
    * Update system timestamps.
@@ -475,7 +479,9 @@ class _GasSheetDbTable {
   _withLock(callback) {
     return this.lockService.withLock(this.lockScope, () => {
       SpreadsheetApp.flush();
-      return callback();
+      const response = callback();
+      SpreadsheetApp.flush();
+      return response;
     });
   }
 }
