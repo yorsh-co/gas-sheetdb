@@ -11,10 +11,14 @@ declare class _GasSheetDbTable {
   rowIndexes: GasSheetDbRowsReference;
   sheet: GoogleAppsScript.Spreadsheet.Sheet;
   schema: _GasSheetDbTableSchema;
+  lockScope: GasSheetDbLockScope;
+  lockService: GasSheetDbLockService;
   constructor({
     spreadsheet,
     sheetName,
     rowNumbers,
+    lockScope,
+    lockService,
   }: GasSheetDbTableConstructorOptions);
   /**
    * Derive base-0 data array row indexes from
@@ -170,7 +174,8 @@ declare class _GasSheetDbTable {
    */
   private _generateId;
   /**
-   * Execute a callback inside a document lock.
+   * Execute a callback inside this table's configured lock, via whichever
+   * lockService was injected (or the minimal default fallback).
    */
   private _withLock;
 }

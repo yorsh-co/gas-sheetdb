@@ -27,8 +27,8 @@ Entries can be queried and updated through a `GasSheetDb` instance using ORM-lik
 - Objects and arrays are JSON serialized
 - Accepts new entries inserted manually to the spreadsheet
 - Supports both bound and standalone spreadsheets
-- Uses Apps Script `LockService` for safer concurrent writes (full transactions are not yet supported)
-- Written in TypeScript with generated JavaScript distribution
+- Uses Apps Script `LockService` for safer concurrent writes, with a configurable lock scope per instance or per table (full transactions are not yet supported)
+- Optionally accepts an injected lock service ([`gas-lock`](https://github.com/yorsh-co/gas-lock)) so nested locks across multiple services in one execution reuse a single lock instead of deadlocking- Written in TypeScript with generated JavaScript distribution
 - No external dependencies beyond built-in Apps Script services
 
 ### Example Usage
@@ -194,6 +194,8 @@ See the [Configure the file push order](#6-configure-the-file-push-order) sectio
 const sheetDb = new GasSheetDb({
   useActiveSpreadsheet: true, // or spreadsheet / spreadsheetUrl / spreadsheetId
   rowNumbers: { columnKeys: 2, firstData: 3 }, // optionally, set your own row configuration. Defaults to `{ columnKeys: 1, firstData: 2 }`
+  lockScope: 'script', // optionally, set the lock scope for writes. Defaults to `'script'`
+  lockService: GasLock, // optionally, configure the instance to use `gas-lock` in the place of the default LockService
 });
 ```
 
@@ -203,6 +205,7 @@ const sheetDb = new GasSheetDb({
 const myTable = sheetDb.table({
   sheetName: 'My Table',
   rowNumbers: { columnKeys: 3, firstData: 4 }, // optionally, set a table-specific row configuration that takes precedence over the `sheetDb` row configuration
+  lockScope: 'user', // optionally, override the instance lock scope for this table
 });
 ```
 
@@ -300,6 +303,7 @@ See the [Scopes](#scopes) section above.
 const sheetDb = new GasSheetDb({
   useActiveSpreadsheet: true, // or spreadsheet / spreadsheetUrl / spreadsheetId
   rowNumbers: { columnKeys: 2, firstData: 3 }, // optionally, set your own row configuration. Defaults to `{ columnKeys: 1, firstData: 2 }`
+  lockScope: 'script', // optionally, set the lock scope for writes. Defaults to `'script'`
 });
 ```
 
@@ -309,6 +313,7 @@ const sheetDb = new GasSheetDb({
 const myTable = sheetDb.table({
   sheetName: 'My Table',
   rowNumbers: { columnKeys: 3, firstData: 4 }, // optionally, set a table-specific row configuration that takes precedence over the `sheetDb` row configuration
+  lockScope: 'user', // optionally, override the instance lock scope for this table
 });
 ```
 
@@ -610,6 +615,53 @@ Stored in the sheet as:
 
 Values are automatically decoded when reading rows.
 
+### Locking
+
+Every write operation runs inside an Apps Script `LockService` lock. The scope is configurable per instance, and overridable per table:
+
+```js
+const sheetDb = new GasSheetDb({
+  useActiveSpreadsheet: true,
+  lockScope: 'script', // default
+});
+
+const auditTable = sheetDb.table({
+  sheetName: 'Audit',
+  lockScope: 'user', // per-user writes, no cross-user blocking
+});
+```
+
+| Scope                | Serializes across                              | Notes                                                                                                                                                      |
+| -------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `script` _(default)_ | All users and all executions of the script     | Always available.                                                                                                                                          |
+| `document`           | All executions against the containing document | Only available to scripts running in the context of a containing document. Returns no lock — and therefore no mutual exclusion — from a web app execution. |
+| `user`               | The current user's own concurrent executions   | Does not protect against concurrent writes by different users.                                                                                             |
+
+> **Note:**
+> Prior to `2.0.0`, `gas-sheetdb` always used a document lock. Because that scope silently provides no lock at all in a web app execution, the default is now `script`. Set `lockScope: 'document'` explicitly to restore the old behavior.
+
+#### Injecting a lock service
+
+`LockService` locks aren't reentrant: if your own code holds a lock and then calls a `gas-sheetdb` write that acquires the same scope, the inner acquire blocks until timeout — nothing in a single-threaded execution can release the outer lock while it waits.
+
+```js
+// Deadlocks — the insert() blocks on a 'script' lock this callback holds.
+GasLock.withLock('script', () => {
+  reportsTable.insert(entry);
+});
+```
+
+Pass [`gas-lock`](https://github.com/yorsh-co/gas-lock) as `lockService` to fix this. It tracks which scopes the current execution already holds, so nested acquires reuse the outer lock rather than waiting on it:
+
+```js
+const sheetDb = new GasSheetDb({
+  useActiveSpreadsheet: true,
+  lockService: GasLock,
+});
+```
+
+Omit `lockService` and `gas-sheetdb` acquires `LockService` locks directly, with no reentrancy protection — the standalone default, and unchanged behavior for existing callers.
+
 ### Entry Point
 
 #### GasSheetDb
@@ -625,6 +677,8 @@ new GasSheetDb({
   spreadsheetId, // or
   useActiveSpreadsheet,
   rowNumbers, // optional instance-wide default
+  lockScope, // optional, 'script' | 'document' | 'user'. Defaults to 'script'
+  lockService, // optional, e.g. GasLock. Defaults to LockService directly
 });
 ```
 
@@ -633,7 +687,7 @@ The resolved spreadsheet is available as sheetDb.spreadsheet.
 ##### Methods
 
 ```js
-GasSheetDb(...).table({ sheetName, rowNumbers });
+GasSheetDb(...).table({ sheetName, rowNumbers, lockScope });
 ```
 
 #### Table instance returned by GasSheetDb.table(...)
@@ -673,7 +727,7 @@ softDeleteMany(entry);
 restore(entry);
 restoreMany(entries);
 
-delete(entry);
+`delete(entry);`;
 deleteMany(entries);
 ```
 

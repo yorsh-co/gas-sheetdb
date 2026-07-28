@@ -13,6 +13,8 @@ class GasSheetDb {
       ..._GAS_SHEET_DB_DEFAULT_ROW_NUMBERS,
       ...options.rowNumbers,
     };
+    this.lockScope = this._resolveLockScope(options.lockScope);
+    this.lockService = options.lockService ?? _GAS_SHEETDB_DEFAULT_LOCK_SERVICE;
   }
   /**
      * Resolve the spreadsheet from the provided source option.
@@ -49,10 +51,23 @@ class GasSheetDb {
     return activeSpreadsheet;
   }
   /**
+   * Validate a lockScope, falling back to the library default when omitted.
+   * Shared by the constructor and table(), so both reject bad input alike.
+   */
+  _resolveLockScope(lockScope) {
+    if (lockScope === undefined) return _GAS_SHEETDB_DEFAULT_LOCK_SCOPE;
+    if (!_GAS_SHEETDB_LOCK_SCOPES.includes(lockScope)) {
+      throw new Error(
+        `[GasSheetDb] Invalid "lockScope": "${lockScope}". Expected one of: ${_GAS_SHEETDB_LOCK_SCOPES.join(', ')}.`,
+      );
+    }
+    return lockScope;
+  }
+  /**
    * Create a table wrapper for a sheet.
    */
   table(options = {}) {
-    const { sheetName = null, rowNumbers = {} } = options;
+    const { sheetName = null, rowNumbers = {}, lockScope } = options;
     return new _GasSheetDbTable({
       spreadsheet: this.spreadsheet,
       sheetName,
@@ -60,6 +75,11 @@ class GasSheetDb {
         ...this.rowNumbers,
         ...rowNumbers,
       },
+      lockScope:
+        lockScope === undefined
+          ? this.lockScope
+          : this._resolveLockScope(lockScope),
+      lockService: this.lockService,
     });
   }
 }

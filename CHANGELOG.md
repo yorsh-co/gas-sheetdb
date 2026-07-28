@@ -2,11 +2,25 @@
 
 ---
 
-## [1.1.1] - 2026-07-24
+## [Unreleased]
+
+### Added
+
+- `lockScope` option (`'script' | 'document' | 'user'`) on the `GasSheetDb` constructor, overridable per table via `table({ lockScope })`
+- `lockService` option on the `GasSheetDb` constructor, accepting any object exposing `withLock(scope, callback, options?)`. Pass [`gas-lock`](https://github.com/yorsh-co/gas-lock) to share one reentrancy-safe lock registry across every service in an execution
 
 ### Changed
 
-- Add README.md to .prettierignore to avoid overwriting `delete(entry)` method formatting
+- **BREAKING:** Write operations are now guarded by a **script**-scoped lock by default, where they previously used `LockService.getDocumentLock()` unconditionally. Callers depending on document-scoped semantics must now opt in explicitly with `lockScope: 'document'`.
+
+### Fixed
+
+- Concurrent writes are now actually serialized in web app executions. `getDocumentLock()` returns `null` outside the context of a containing document — including a web app's `doGet`/`doPost` — so the previous hard-coded document lock provided no mutual exclusion there, regardless of the script being container-bound. Concurrent writers could interleave between `getMaxRows()` and `getLastRow()`, surfacing as `Those rows are out of bounds.` from `_ensureBlankRows`.
+
+### Documentation
+
+- Documented the three lock scopes and their execution-context caveats
+- Documented injecting `gas-lock` as a `lockService`, and the deadlock it prevents when a caller holds a lock across a `gas-sheetdb` write
 
 ---
 

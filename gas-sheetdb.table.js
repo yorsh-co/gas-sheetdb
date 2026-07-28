@@ -6,13 +6,21 @@
  * automatic column management, and metadata handling.
  */
 class _GasSheetDbTable {
-  constructor({ spreadsheet, sheetName = null, rowNumbers }) {
+  constructor({
+    spreadsheet,
+    sheetName = null,
+    rowNumbers,
+    lockScope,
+    lockService,
+  }) {
     this.spreadsheet = spreadsheet;
     this.sheetName = sheetName;
     this.rowNumbers = rowNumbers; // Base-1 row numbers
     this.rowIndexes = this._deriveRowIndexes(); // Base-0 row indexes
     this.sheet = this._ensureSheet();
     this.schema = new _GasSheetDbTableSchema(this.sheet, this.rowNumbers);
+    this.lockScope = lockScope;
+    this.lockService = lockService;
   }
   // =========================
   // CONSTRUCTOR HELPERS
@@ -460,15 +468,10 @@ class _GasSheetDbTable {
   // RUNTIME HELPERS
   // =========================
   /**
-   * Execute a callback inside a document lock.
+   * Execute a callback inside this table's configured lock, via whichever
+   * lockService was injected (or the minimal default fallback).
    */
   _withLock(callback) {
-    const lock = LockService.getDocumentLock();
-    lock.waitLock(30000);
-    try {
-      return callback();
-    } finally {
-      lock.releaseLock();
-    }
+    return this.lockService.withLock(this.lockScope, callback);
   }
 }
