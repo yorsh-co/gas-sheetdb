@@ -409,7 +409,14 @@ class _GasSheetDbTable {
    * Write to the entire table body on the sheet.
    */
   private _setTableBodyData(data: GasSheetDbCellValue[][] = []): void {
-    if (!data.length || !data[0]?.length) throw new Error('Empty data');
+    // deleting every entry leaves nothing to write, but the orphaned rows
+    // still have to come off the sheet
+    if (!data.length) {
+      this._removeExtraRows(0);
+      return;
+    }
+
+    if (!data[0]?.length) throw new Error('Empty data');
 
     const tableBodyRange = this.sheet.getRange(
       this.rowNumbers.firstData,
