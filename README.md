@@ -821,6 +821,8 @@ softDeleteWhere(predicateFn, options);
 restore(entry);
 restoreMany(entries);
 
+softDeleteWhere(predicateFn, options);
+
 deleteOne(entry);
 deleteMany(entries);
 deleteWhere(predicateFn, options);
