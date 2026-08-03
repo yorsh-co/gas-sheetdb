@@ -35,12 +35,20 @@ declare class _GasSheetDbTable {
    * name. Applies basic formatting including alternating
    * row colors and a frozen header row.
    */
-  _insertSheet(): GoogleAppsScript.Spreadsheet.Sheet;
+  private _insertSheet;
   /**
    * Read all rows as objects.
    * Adds runtime metadata to each entry.
    */
   find(options?: GasSheetDbFindOptions): GasSheetDbEntry[];
+  /**
+   * Read all rows as objects, without acquiring the lock.
+   *
+   * Callers are responsible for holding the lock. This exists so that a
+   * single public method can read and then write within one lock — see
+   * `_withLock` for why nesting the public methods is not an option.
+   */
+  private _findUnlocked;
   /**
    * Filter entries using a predicate.
    */
@@ -80,6 +88,38 @@ declare class _GasSheetDbTable {
    */
   updateMany(entries: GasSheetDbEntry[]): GasSheetDbEntry[];
   /**
+   * Update multiple existing entries, without acquiring the lock.
+   *
+   * Callers are responsible for holding the lock.
+   */
+  private _updateManyUnlocked;
+  /**
+   * Update every entry matching a predicate, holding a single lock across
+   * both the read and the write.
+   *
+   * `update` is either a patch object applied to every match, or a function
+   * returning a patch for a given entry. A function that mutates its entry
+   * in place and returns nothing is honoured too.
+   *
+   * Returns the updated entries, or an empty array when nothing matched.
+   */
+  updateWhere(
+    predicateFn: GasSheetDbPredicate,
+    update: GasSheetDbUpdate,
+    options?: GasSheetDbFindOptions,
+  ): GasSheetDbEntry[];
+  /**
+   * Update the first entry matching a predicate, holding a single lock
+   * across both the read and the write.
+   *
+   * Returns the updated entry, or `null` when nothing matched.
+   */
+  updateOneWhere(
+    predicateFn: GasSheetDbPredicate,
+    update: GasSheetDbUpdate,
+    options?: GasSheetDbFindOptions,
+  ): GasSheetDbEntry | null;
+  /**
    * Soft delete a single entry.
    * Requires `_id`.
    */
@@ -100,15 +140,47 @@ declare class _GasSheetDbTable {
    */
   restoreMany(entries: GasSheetDbEntry[]): GasSheetDbEntry[];
   /**
+   * Soft delete every entry matching a predicate, holding a single lock
+   * across both the read and the write.
+   *
+   * Already-trashed entries are excluded from matching by default.
+   *
+   * Returns the soft-deleted entries, or an empty array when nothing matched.
+   */
+  softDeleteWhere(
+    predicateFn: GasSheetDbPredicate,
+    options?: GasSheetDbFindOptions,
+  ): GasSheetDbEntry[];
+  /**
    * Permanently delete a single entry.
    * Requires `_id`.
    */
-  delete(entry: GasSheetDbEntry): void;
+  deleteOne(entry: GasSheetDbEntry): void;
   /**
    * Permanently delete multiple existing entries.
    * Requires `_id` for each entry.
    */
   deleteMany(entries: GasSheetDbEntry[]): void;
+  /**
+   * Permanently delete multiple existing entries, without acquiring the lock.
+   *
+   * Callers are responsible for holding the lock.
+   */
+  private _deleteManyUnlocked;
+  /**
+   * Permanently delete every entry matching a predicate, holding a single
+   * lock across both the read and the write.
+   *
+   * Trashed entries are excluded from matching by default; pass
+   * `{ onlyTrashed: true }` to purge the trash.
+   *
+   * Returns the entries as they were before deletion, or an empty array
+   * when nothing matched.
+   */
+  deleteWhere(
+    predicateFn: GasSheetDbPredicate,
+    options?: GasSheetDbFindOptions,
+  ): GasSheetDbEntry[];
   /**
    * Return the table body, without the column keys row.
    */
@@ -151,6 +223,17 @@ declare class _GasSheetDbTable {
    */
   private _buildRow;
   /**
+   * Resolve the patch to apply to a matched entry.
+   *
+   * An updater that mutates its entry in place and returns nothing falls
+   * back to the entry itself, so an in-place edit is never silently
+   * discarded. `_id` is taken from the matched entry last, so an updater can
+   * neither drop it nor redirect the write to a different row. Matched
+   * entries always carry one, since `_ensureRequiredMetadata` backfills it
+   * before any row is read.
+   */
+  private _resolveUpdate;
+  /**
    * Decode a raw sheet row into an entry object.
    */
   private _decodeRow;
@@ -179,6 +262,12 @@ declare class _GasSheetDbTable {
    *
    * The flush runs inside the lock, resyncing Apps Script's
    * local spreadsheet model.
+   *
+   * Public methods acquire the lock exactly once and must never call one
+   * another: the default lockService is non-reentrant, so a nested call
+   * blocks on a lock this execution already holds until it times out.
+   * Methods that need to read and then write within one lock compose the
+   * private `_*Unlocked` cores instead.
    */
-  _withLock<T>(callback: () => T): T;
+  private _withLock;
 }
