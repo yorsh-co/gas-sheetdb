@@ -4,6 +4,7 @@
 
 ## Database-like storage layer for Google Apps Script projects.
 
+> [!NOTE]
 > The goal of this project is to use Google Sheets as database storage in Apps Script projects without having to manage sheets manually, store layouts, hard-code ranges, or handle concurrent write logic.
 
 `gas-sheetdb` uses Apps Script's `SpreadsheetApp` to turn sheets in a Google Spreadsheet into tables that store object entries as rows.
@@ -113,7 +114,8 @@ const sheetDb = new GasSheetDb({ useActiveSpreadsheet: true });
 
 Use this mode for spreadsheet [container-bound scripts](https://developers.google.com/apps-script/guides/bound).
 
-> **Note:** `GasSheetDb` defaults to the active spreadsheet mode if no argument is passed to the class constructor.
+> [!NOTE]
+> `GasSheetDb` defaults to the active spreadsheet mode if no argument is passed to the class constructor.
 
 ### Explicit Spreadsheet Mode
 
@@ -157,7 +159,8 @@ const sheetDb = new GasSheetDb({
 
 ## Quick Start
 
-It is recommended to use `gas-sheetdb` together with [Google's `clasp` CLI](https://github.com/google/clasp) for local Apps Script development and git-based workflows. See [Setup instructions with `clasp`](#setup-instructions-with-clasp) for more information.
+> [!TIP]
+> It is recommended to use `gas-sheetdb` together with [Google's `clasp` CLI](https://github.com/google/clasp) for local Apps Script development and git-based workflows. See [Setup instructions with `clasp`](#setup-instructions-with-clasp) for more information.
 
 #### 1. Add the library to your Apps Script project
 
@@ -260,30 +263,30 @@ src/lib/gas-sheetdb/
 
 #### 6. Configure the file push order
 
-Apps Script executes files by the order in the Apps Script editor, from top to bottom. By default, `clasp push` orders the files alphabetically, by file name. If a `GasSheetDb` instance is declared at runtime (as a global variable or in an IIFE) in file referencing `GasSheetDb` that is ordered before `gas-sheetdb`'s own files, `clasp push` will succeed but running the project will throw:
-
-```txt
-ReferenceError: GasSheetDb is not defined
-```
-
-To avoid this, add a [`filePushOrder`](https://github.com/google/clasp#filepushorder-optional) entry to your project's `.clasp.json` that pushes `gas-sheetdb`'s module files ahead of any file that references them:
-
-```json
-{
-  "filePushOrder": [
-    "dist/lib/gas-sheetdb/gas-sheetdb.constants.js",
-    "dist/lib/gas-sheetdb/gas-sheetdb.codec.js",
-    "dist/lib/gas-sheetdb/gas-sheetdb.schema.js",
-    "dist/lib/gas-sheetdb/gas-sheetdb.table.js",
-    "dist/lib/gas-sheetdb/gas-sheetdb.class.js",
-    "dist/lib/gas-sheetdb/gas-sheetdb.types.js"
-  ]
-}
-```
-
-Alternatively, you can manually move these files to the top of the file list in the Apps Script editor.
-
-> **Note:**
+> [!IMPORTANT]
+> Apps Script executes files by the order in the Apps Script editor, from top to bottom. By default, `clasp push` orders the files alphabetically, by file name. If a `GasSheetDb` instance is declared at runtime (as a global variable or in an IIFE) in file referencing `GasSheetDb` that is ordered before `gas-sheetdb`'s own files, `clasp push` will succeed but running the project will throw:
+>
+> ```txt
+> ReferenceError: GasSheetDb is not defined
+> ```
+>
+> To avoid this, add a [`filePushOrder`](https://github.com/google/clasp#filepushorder-optional) entry to your project's `.clasp.json` that pushes `gas-sheetdb`'s module files ahead of any file that references them:
+>
+> ```json
+> {
+>   "filePushOrder": [
+>     "dist/lib/gas-sheetdb/gas-sheetdb.constants.js",
+>     "dist/lib/gas-sheetdb/gas-sheetdb.codec.js",
+>     "dist/lib/gas-sheetdb/gas-sheetdb.schema.js",
+>     "dist/lib/gas-sheetdb/gas-sheetdb.table.js",
+>     "dist/lib/gas-sheetdb/gas-sheetdb.class.js",
+>     "dist/lib/gas-sheetdb/gas-sheetdb.types.js"
+>   ]
+> }
+> ```
+>
+> Alternatively, you can manually move these files to the top of the file list in the Apps Script editor.
+>
 > Any file in your own project that constructs a `GasSheetDb` instance (e.g. `config = new GasSheetDb({ ... })`) must be pushed _after_ the entries above.
 
 #### 7. Push local files to Apps Script
@@ -365,7 +368,7 @@ usersTable.insertMany([
 ]);
 ```
 
-> **Note:**
+> [!NOTE]
 > `insert` and `insertMany` mutate the entry objects passed in, adding `_id`, `_createdAt`, `_updatedAt` and `_isDeleted` in place.
 
 ### Read All Entries
@@ -386,7 +389,7 @@ const admins = usersTable.findWhere((user) => user.role === 'admin');
 const user = usersTable.findOneWhere((user) => user._id === 'abc123');
 ```
 
-> **Note:**
+> [!NOTE]
 > The `find`, `findWhere` and `findOneWhere` methods exclude soft-deleted entries by default.
 
 ### Find Deleted Entries
@@ -410,7 +413,7 @@ const allUsers = usersTable.find({ withTrashed: true });
 
 ### Update an Entry
 
-> **Note:**
+> [!NOTE]
 > The `update` and `updateMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
 >
 > Both methods mutate the metadata of the entry objects passed in the argument and also return the full entry object(s) after mutation.
@@ -427,7 +430,7 @@ usersTable.update(user);
 
 ### Update Multiple Entries
 
-> **Note:**
+> [!NOTE]
 > The `update` and `updateMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
 >
 > Both methods mutate the metadata of the entry objects passed in the argument and also return the full entry object(s) after mutation.
@@ -444,7 +447,7 @@ usersTable.updateMany(users);
 
 ### Partial Update
 
-> **Note:**
+> [!NOTE]
 > As long as the object contains original `_id` property returned by one of the `find...()` methods, `update` and `updateMany` can accept partial entries.
 >
 > Both methods return the full entry object(s) after mutation.
@@ -464,7 +467,7 @@ const updatedUser = usersTable.update(userRoleConfig); // returns the full entry
 
 ### Soft Delete an Entry
 
-> **Note:**
+> [!NOTE]
 > The `softDelete` and `softDeleteMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
 >
 > Both methods mutate the metadata of the entry objects passed in the argument and also return the full entry object(s) after mutation.
@@ -479,7 +482,7 @@ usersTable.softDelete(user);
 
 ### Soft Delete Multiple Entries
 
-> **Note:**
+> [!NOTE]
 > The `softDelete` and `softDeleteMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
 >
 > Both methods mutate the metadata of the entry objects passed in the argument and also return the full entry object(s) after mutation.
@@ -492,7 +495,7 @@ usersTable.softDeleteMany(users);
 
 ### Restore an Entry
 
-> **Note:**
+> [!NOTE]
 > The `restore` and `restoreMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
 >
 > Both methods mutate the metadata of the entry objects passed in the argument and also return the full entry object(s) after mutation.
@@ -507,7 +510,7 @@ usersTable.restore(user);
 
 ### Restore Multiple Entries
 
-> **Note:**
+> [!NOTE]
 > The `restore` and `restoreMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
 >
 > Both methods mutate the metadata of the entry objects passed in the argument and also return the full entry object(s) after mutation.
@@ -520,8 +523,8 @@ usersTable.restoreMany(users);
 
 ### Permanently Delete an Entry
 
-> **Note:**
-> The `delete` and `deleteMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
+> [!NOTE]
+> The `deleteOne` and `deleteMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
 
 ```js
 const user = usersTable.findOneWhere(
@@ -533,7 +536,7 @@ usersTable.deleteOne(user);
 
 ### Permanently Delete Multiple Entries
 
-> **Note:**
+> [!NOTE]
 > The `deleteOne` and `deleteMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
 
 ```js
@@ -588,7 +591,7 @@ usersTable.updateWhere(
 );
 ```
 
-> **Note:**
+> [!NOTE]
 > `_id` is always taken from the matched entry. An updater cannot drop it or redirect the write to a different row.
 
 ### Update a Single Entry Matching a Predicate
@@ -659,7 +662,8 @@ New entries automatically receive:
 }
 ```
 
-> **Note:** All metadata properties are managed automatically and should not normally be modified directly.
+> [!NOTE]
+> All metadata properties are managed automatically and should not normally be modified directly.
 
 ### Entry Lifecycle
 
@@ -724,7 +728,7 @@ const auditTable = sheetDb.table({
 | `document`           | All executions against the containing document | Only available to scripts running in the context of a containing document. Returns no lock — and therefore no mutual exclusion — from a web app execution. |
 | `user`               | The current user's own concurrent executions   | Does not protect against concurrent writes by different users.                                                                                             |
 
-> **Note:**
+> [!NOTE]
 > Prior to `2.0.0`, `gas-sheetdb` always used a document lock. Because that scope silently provides no lock at all in a web app execution, the default is now `script`. Set `lockScope: 'document'` explicitly to restore the old behavior.
 
 #### Injecting a lock service
@@ -803,6 +807,8 @@ Update Methods:
 ```js
 update(entry);
 updateMany(entries);
+updateWhere(predicateFn, update, options);
+updateOneWhere(predicateFn, update, options);
 ```
 
 Deletion Methods:
@@ -810,15 +816,18 @@ Deletion Methods:
 ```js
 softDelete(entry);
 softDeleteMany(entry);
+softDeleteWhere(predicateFn, options);
 
 restore(entry);
 restoreMany(entries);
 
 deleteOne(entry);
 deleteMany(entries);
+deleteWhere(predicateFn, options);
 ```
 
-> **Note:** All write operations mutate the original object [metadata](#metadata) and also return the persisted entry(ies). This keeps the in-memory instance up to date with the persisted state, while also allowing for partial entries to be passed to the write operation methods as long as the original entry `_id` property is included.
+> [!NOTE]
+> All write operations mutate the original object [metadata](#metadata) and also return the persisted entry(ies). This keeps the in-memory instance up to date with the persisted state, while also allowing for partial entries to be passed to the write operation methods as long as the original entry `_id` property is included.
 
 ### Example Workflow
 
@@ -882,3 +891,9 @@ See the `LICENSE` file for details.
 Issues and feature requests are welcome via GitHub Issues.
 
 Maintained by [yorsh-co](https://github.com/yorsh-co).
+
+---
+
+> [!TIP]
+> Found `gas-sheetdb` useful?
+> Find more Google Apps Script libraries at [github.com/yorsh-co](https://github.com/yorsh-co).
