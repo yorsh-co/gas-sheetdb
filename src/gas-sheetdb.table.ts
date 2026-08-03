@@ -113,35 +113,46 @@ class _GasSheetDbTable {
    * Adds runtime metadata to each entry.
    */
   find(options: GasSheetDbFindOptions = {}): GasSheetDbEntry[] {
+    return this._withLock(() => this._findUnlocked(options));
+  }
+
+  /**
+   * Read all rows as objects, without acquiring the lock.
+   *
+   * Callers are responsible for holding the lock. This exists so that a
+   * single public method can read and then write within one lock — see
+   * `_withLock` for why nesting the public methods is not an option.
+   */
+  private _findUnlocked(
+    options: GasSheetDbFindOptions = {},
+  ): GasSheetDbEntry[] {
     const { withTrashed = false, onlyTrashed = false } = options;
 
-    return this._withLock(() => {
-      this._ensureRequiredMetadata();
+    this._ensureRequiredMetadata();
 
-      const data = this._getTableBodyData();
+    const data = this._getTableBodyData();
 
-      const isTrashedColIndex = this._getColumnIndex(
-        _GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED,
-      );
+    const isTrashedColIndex = this._getColumnIndex(
+      _GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED,
+    );
 
-      const entries = [];
+    const entries = [];
 
-      for (let dataIndex = 0; dataIndex < data.length; dataIndex++) {
-        const row = data[dataIndex];
+    for (let dataIndex = 0; dataIndex < data.length; dataIndex++) {
+      const row = data[dataIndex];
 
-        // handle `onlyTrashed = true`
-        if (onlyTrashed && !row?.[isTrashedColIndex]) continue;
+      // handle `onlyTrashed = true`
+      if (onlyTrashed && !row?.[isTrashedColIndex]) continue;
 
-        // handle `withTrashed = false`
-        if (!onlyTrashed && !withTrashed && row?.[isTrashedColIndex]) continue;
+      // handle `withTrashed = false`
+      if (!onlyTrashed && !withTrashed && row?.[isTrashedColIndex]) continue;
 
-        const entry = this._decodeRow(row || []);
+      const entry = this._decodeRow(row || []);
 
-        entries.push(entry);
-      }
+      entries.push(entry);
+    }
 
-      return entries;
-    });
+    return entries;
   }
 
   /**
@@ -227,50 +238,57 @@ class _GasSheetDbTable {
    * Requires `_id` for each entry.
    */
   updateMany(entries: GasSheetDbEntry[]): GasSheetDbEntry[] {
-    return this._withLock(() => {
-      // add new property columns
-      this.schema.reload();
+    return this._withLock(() => this._updateManyUnlocked(entries));
+  }
 
-      const columnKeys = this._extractKeys(entries);
+  /**
+   * Update multiple existing entries, without acquiring the lock.
+   *
+   * Callers are responsible for holding the lock.
+   */
+  private _updateManyUnlocked(entries: GasSheetDbEntry[]): GasSheetDbEntry[] {
+    // add new property columns
+    this.schema.reload();
 
-      this.schema.ensureColumns(columnKeys);
-      this.schema.reload();
+    const columnKeys = this._extractKeys(entries);
 
-      // load the current data after schema reload
-      const data = this._getTableBodyData();
+    this.schema.ensureColumns(columnKeys);
+    this.schema.reload();
 
-      // map the row indexes
-      const rowIndexesById = this._mapTableBodyRowIndexesById(data);
+    // load the current data after schema reload
+    const data = this._getTableBodyData();
 
-      // gather the updated row indexes so that the entries can be
-      // returned in their post-`_buildRow` state
-      const updatedRowIndexes = [];
+    // map the row indexes
+    const rowIndexesById = this._mapTableBodyRowIndexesById(data);
 
-      for (const entry of entries) {
-        if (!entry._id) {
-          throw new Error('Cannot update entry without "_id"');
-        }
+    // gather the updated row indexes so that the entries can be
+    // returned in their post-`_buildRow` state
+    const updatedRowIndexes = [];
 
-        const rowIndex = rowIndexesById.get(entry._id);
-
-        if (rowIndex === undefined) {
-          throw new Error(`Entry not found: ${entry._id}`);
-        }
-
-        this._applyUpdateMetadata(entry);
-
-        data[rowIndex] = this._buildRow(entry, data[rowIndex]);
-
-        updatedRowIndexes.push(rowIndex);
+    for (const entry of entries) {
+      if (!entry._id) {
+        throw new Error('Cannot update entry without "_id"');
       }
 
-      this._setTableBodyData(data);
+      const rowIndex = rowIndexesById.get(entry._id);
 
-      // return the entries in their post-`_buildRow` state
-      return updatedRowIndexes.map((rowIndex) =>
-        this._decodeRow(data[rowIndex]!),
-      );
-    });
+      if (rowIndex === undefined) {
+        throw new Error(`Entry not found: ${entry._id}`);
+      }
+
+      this._applyUpdateMetadata(entry);
+
+      data[rowIndex] = this._buildRow(entry, data[rowIndex]);
+
+      updatedRowIndexes.push(rowIndex);
+    }
+
+    this._setTableBodyData(data);
+
+    // return the entries in their post-`_buildRow` state
+    return updatedRowIndexes.map((rowIndex) =>
+      this._decodeRow(data[rowIndex]!),
+    );
   }
 
   // =========================
@@ -330,35 +348,42 @@ class _GasSheetDbTable {
    * Requires `_id` for each entry.
    */
   deleteMany(entries: GasSheetDbEntry[]): void {
-    this._withLock(() => {
-      // load the current data after schema reload
-      const data = this._getTableBodyData();
+    this._withLock(() => this._deleteManyUnlocked(entries));
+  }
 
-      // map the row indexes
-      const rowIndexesById = this._mapTableBodyRowIndexesById(data);
+  /**
+   * Permanently delete multiple existing entries, without acquiring the lock.
+   *
+   * Callers are responsible for holding the lock.
+   */
+  private _deleteManyUnlocked(entries: GasSheetDbEntry[]): void {
+    // load the current data after schema reload
+    const data = this._getTableBodyData();
 
-      const entriesRowIndexes = [];
-      for (const entry of entries) {
-        if (!entry._id) {
-          throw new Error('Cannot update entry without "_id"');
-        }
+    // map the row indexes
+    const rowIndexesById = this._mapTableBodyRowIndexesById(data);
 
-        const rowIndex = rowIndexesById.get(entry._id);
-
-        if (rowIndex === undefined) {
-          throw new Error(`Entry not found: ${entry._id}`);
-        }
-
-        entriesRowIndexes.push(rowIndex);
+    const entriesRowIndexes = [];
+    for (const entry of entries) {
+      if (!entry._id) {
+        throw new Error('Cannot update entry without "_id"');
       }
 
-      // sort in reverse order to delete from the bottom up
-      entriesRowIndexes.sort((a, b) => b - a);
+      const rowIndex = rowIndexesById.get(entry._id);
 
-      entriesRowIndexes.forEach((rowIndex) => data.splice(rowIndex, 1));
+      if (rowIndex === undefined) {
+        throw new Error(`Entry not found: ${entry._id}`);
+      }
 
-      this._setTableBodyData(data);
-    });
+      entriesRowIndexes.push(rowIndex);
+    }
+
+    // sort in reverse order to delete from the bottom up
+    entriesRowIndexes.sort((a, b) => b - a);
+
+    entriesRowIndexes.forEach((rowIndex) => data.splice(rowIndex, 1));
+
+    this._setTableBodyData(data);
   }
 
   // =========================
@@ -628,6 +653,12 @@ class _GasSheetDbTable {
    *
    * The flush runs inside the lock, resyncing Apps Script's
    * local spreadsheet model.
+   *
+   * Public methods acquire the lock exactly once and must never call one
+   * another: the default lockService is non-reentrant, so a nested call
+   * blocks on a lock this execution already holds until it times out.
+   * Methods that need to read and then write within one lock compose the
+   * private `_*Unlocked` cores instead.
    */
   _withLock<T>(callback: () => T): T {
     return this.lockService.withLock(this.lockScope, () => {
