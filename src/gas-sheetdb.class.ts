@@ -10,6 +10,8 @@ const _GAS_SHEET_DB_DEFAULT_ROW_NUMBERS: GasSheetDbRowsReference =
 class GasSheetDb {
   spreadsheet: GoogleAppsScript.Spreadsheet.Spreadsheet;
   rowNumbers: GasSheetDbRowsReference;
+  lockScope: GasSheetDbLockScope;
+  lockService: GasSheetDbLockService;
 
   constructor(options: GasSheetDbOptions = {}) {
     this.spreadsheet = this._resolveSpreadsheet(options);
@@ -18,6 +20,9 @@ class GasSheetDb {
       ..._GAS_SHEET_DB_DEFAULT_ROW_NUMBERS,
       ...options.rowNumbers,
     };
+
+    this.lockScope = this._resolveLockScope(options.lockScope);
+    this.lockService = options.lockService ?? _GAS_SHEETDB_DEFAULT_LOCK_SERVICE;
   }
 
   /**
@@ -69,10 +74,26 @@ class GasSheetDb {
   }
 
   /**
+   * Validate a lockScope, falling back to the library default when omitted.
+   * Shared by the constructor and table(), so both reject bad input alike.
+   */
+  private _resolveLockScope(
+    lockScope?: GasSheetDbLockScope,
+  ): GasSheetDbLockScope {
+    if (lockScope === undefined) return _GAS_SHEETDB_DEFAULT_LOCK_SCOPE;
+    if (!_GAS_SHEETDB_LOCK_SCOPES.includes(lockScope)) {
+      throw new Error(
+        `[GasSheetDb] Invalid "lockScope": "${lockScope}". Expected one of: ${_GAS_SHEETDB_LOCK_SCOPES.join(', ')}.`,
+      );
+    }
+    return lockScope;
+  }
+
+  /**
    * Create a table wrapper for a sheet.
    */
   table(options: GasSheetDbTableOptions = {}): _GasSheetDbTable {
-    const { sheetName = null, rowNumbers = {} } = options;
+    const { sheetName = null, rowNumbers = {}, lockScope } = options;
 
     return new _GasSheetDbTable({
       spreadsheet: this.spreadsheet,
@@ -81,6 +102,11 @@ class GasSheetDb {
         ...this.rowNumbers,
         ...rowNumbers,
       },
+      lockScope:
+        lockScope === undefined
+          ? this.lockScope
+          : this._resolveLockScope(lockScope),
+      lockService: this.lockService,
     });
   }
 }

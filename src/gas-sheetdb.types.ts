@@ -25,12 +25,18 @@ interface GasSheetDbOptions {
   spreadsheetId?: string;
   useActiveSpreadsheet?: boolean;
   rowNumbers?: Partial<GasSheetDbRowsReference>;
+  /** @default 'script' */
+  lockScope?: GasSheetDbLockScope;
+  /** @default an internal fallback calling LockService directly, with no reentrancy protection */
+  lockService?: GasSheetDbLockService;
 }
 
 /** Options for `GasSheetDb.table()`. */
 interface GasSheetDbTableOptions {
   sheetName?: string | null;
   rowNumbers?: Partial<GasSheetDbRowsReference>;
+  /** Overrides the parent `GasSheetDb` instance's lockScope for this table only. */
+  lockScope?: GasSheetDbLockScope;
 }
 
 /** Constructor options for the internal `_GasSheetDbTable` class. */
@@ -38,10 +44,41 @@ interface GasSheetDbTableConstructorOptions {
   spreadsheet: GoogleAppsScript.Spreadsheet.Spreadsheet;
   sheetName?: string | null;
   rowNumbers: GasSheetDbRowsReference;
+  lockScope: GasSheetDbLockScope;
+  lockService: GasSheetDbLockService;
 }
+
+/** Matches entries in the predicate-based query, update and delete methods. */
+type GasSheetDbPredicate = (entry: GasSheetDbEntry) => boolean;
+
+/**
+ * The change `updateWhere()`/`updateOneWhere()` applies to each matched
+ * entry: either a patch object applied to every match, or a function
+ * returning a patch for a given entry. A function that mutates its entry in
+ * place and returns nothing is honoured too.
+ */
+type GasSheetDbUpdate =
+  GasSheetDbEntry | ((entry: GasSheetDbEntry) => GasSheetDbEntry | void);
 
 /** Options for `_GasSheetDbTable#find()`. */
 interface GasSheetDbFindOptions {
   withTrashed?: boolean;
   onlyTrashed?: boolean;
 }
+
+/**
+ * Minimal lock-service shape gas-sheetdb needs to guard its writes.
+ * GasLock (github.com/yorsh-co/gas-lock) satisfies this directly — pass
+ * it in to get reentrancy-safe nesting with your own LockService calls.
+ * Omit it and gas-sheetdb falls back to acquiring Apps Script's
+ * LockService directly, with no reentrancy protection.
+ */
+interface GasSheetDbLockService {
+  withLock<T>(
+    scope: GasSheetDbLockScope,
+    callback: () => T,
+    options?: { timeoutMs?: number },
+  ): T;
+}
+
+type GasSheetDbLockScope = 'script' | 'document' | 'user';
