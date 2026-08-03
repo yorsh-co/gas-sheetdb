@@ -8,7 +8,7 @@
 
 `gas-sheetdb` uses Apps Script's `SpreadsheetApp` to turn sheets in a Google Spreadsheet into tables that store object entries as rows.
 
-Entries can be queried and updated through a `GasSheetDb` instance using ORM-like methods such as `find`, `insert`, `update`, `softDelete`, `restore` and `delete`.
+Entries can be queried and updated through a `GasSheetDb` instance using ORM-like methods such as `find`, `insert`, `update`, `softDelete`, `restore` and `deleteOne`.
 
 > **Disclaimer:**
 > This project and [Yorsh](https://github.com/yorsh-co) are independent and are not affiliated with, endorsed by, or associated with Google LLC.
@@ -528,13 +528,13 @@ const user = usersTable.findOneWhere(
   (entry) => entry.email === 'john@email.com',
 );
 
-usersTable.delete(user);
+usersTable.deleteOne(user);
 ```
 
 ### Permanently Delete Multiple Entries
 
 > **Note:**
-> The `delete` and `deleteMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
+> The `deleteOne` and `deleteMany` methods only accept objects containing the original `_id` property returned by one of the `find...()` methods.
 
 ```js
 const users = usersTable.findWhere((entry) => entry.access === 'revoked');
@@ -814,7 +814,7 @@ softDeleteMany(entry);
 restore(entry);
 restoreMany(entries);
 
-`delete(entry);`;
+deleteOne(entry);
 deleteMany(entries);
 ```
 

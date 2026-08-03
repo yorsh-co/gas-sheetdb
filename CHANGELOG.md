@@ -14,6 +14,7 @@
 ### Changed
 
 - **BREAKING:** Write operations are now guarded by a **script**-scoped lock by default, where they previously used `LockService.getDocumentLock()` unconditionally. Callers depending on document-scoped semantics must now opt in explicitly with `lockScope: 'document'`.
+- **BREAKING:** Rename `delete` method as `deleteOne` in `_GasSheetDbTable` to avoid conflict with JS `delete` operator.
 
 ### Fixed
 

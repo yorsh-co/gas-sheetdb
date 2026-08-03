@@ -404,7 +404,7 @@ class _GasSheetDbTable {
    * Permanently delete a single entry.
    * Requires `_id`.
    */
-  delete(entry: GasSheetDbEntry): void {
+  deleteOne(entry: GasSheetDbEntry): void {
     this.deleteMany([entry]);
   }
 
