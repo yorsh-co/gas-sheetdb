@@ -2,6 +2,32 @@
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- `updateWhere(predicateFn, update, options?)` and `updateOneWhere(predicateFn, update, options?)`, matching entries with a predicate and writing them back under a **single lock**, so read-modify-write operations (counters, balances, status transitions) can no longer interleave with another execution. `update` is either a patch object applied to every match, or a function returning a patch for a given entry; an updater that mutates its entry in place and returns nothing is honoured too. `_id` is always taken from the matched entry, so an updater cannot drop it or redirect the write to another row
+- `softDeleteWhere(predicateFn, options?)` and `deleteWhere(predicateFn, options?)`, applying the same single-lock predicate matching to soft and permanent deletes. `deleteWhere` returns the entries as they were before deletion
+- `lockScope` option (`'script' | 'document' | 'user'`) on the `GasSheetDb` constructor, overridable per table via `table({ lockScope })`
+- `lockService` option on the `GasSheetDb` constructor, accepting any object exposing `withLock(scope, callback, options?)`. Pass [`gas-lock`](https://github.com/yorsh-co/gas-lock) to share one reentrancy-safe lock registry across every service in an execution
+
+### Changed
+
+- **BREAKING:** Write operations are now guarded by a **script**-scoped lock by default, where they previously used `LockService.getDocumentLock()` unconditionally. Callers depending on document-scoped semantics must now opt in explicitly with `lockScope: 'document'`.
+
+### Fixed
+
+- **Regression:** deleting every remaining entry no longer throws `Empty data`. `deleteMany` splices the table body down to zero rows, and `_setTableBodyData` rejected the empty result instead of clearing the orphaned rows off the sheet. This restores the behaviour originally shipped in [0.1.1](#011---2026-07-15), which the TypeScript migration reverted. Previously reachable only by passing every entry to `deleteMany`; `deleteWhere` makes it trivially reachable with a broad predicate
+- Concurrent writes are now actually serialized in web app executions. `getDocumentLock()` returns `null` outside the context of a containing document — including a web app's `doGet`/`doPost` — so the previous hard-coded document lock provided no mutual exclusion there, regardless of the script being container-bound. Concurrent writers could interleave between `getMaxRows()` and `getLastRow()`, surfacing as `Those rows are out of bounds.` from `_ensureBlankRows`.
+
+### Documentation
+
+- Documented the predicate-based write methods and the single-lock guarantee they provide over a `find...()` followed by a separate write
+- Documented the three lock scopes and their execution-context caveats
+- Documented injecting `gas-lock` as a `lockService`, and the deadlock it prevents when a caller holds a lock across a `gas-sheetdb` write
+
+---
+
 ## [1.1.1] - 2026-07-24
 
 ### Changed
