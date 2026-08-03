@@ -18,6 +18,7 @@ Entries can be queried and updated through a `GasSheetDb` instance using ORM-lik
 - Store object entries as rows in sheets
 - Query entries using methods like find, findWhere, and findOneWhere
 - Insert, update, soft delete, restore and permanently delete entries using plain JavaScript objects
+- Update and delete entries matching a predicate, with the read and the write held under a single lock
 - Write operations return the persisted entries, including the generated metadata
 - Automatically creates missing columns when new properties appear during inserts or updates
 - Automatically adds `_id`, `_createdAt`, `_updatedAt`, and `_isDeleted` metadata fields to new entries
@@ -539,6 +540,92 @@ usersTable.delete(user);
 const users = usersTable.findWhere((entry) => entry.access === 'revoked');
 
 usersTable.deleteMany(users);
+```
+
+## Predicate-Based Writes
+
+Reading with one method and writing with another takes two separate locks, and another execution can write to the table in between. `updateWhere`, `updateOneWhere`, `softDeleteWhere` and `deleteWhere` match entries with a predicate and write them back while **holding a single lock across both the read and the write**.
+
+Use them whenever the new value depends on the value already stored — counters, balances, status transitions, claiming a queued row.
+
+```js
+// this is NOT safe: another execution can write between the two calls
+const user = usersTable.findOneWhere((entry) => entry.email === email);
+usersTable.update({ _id: user._id, visits: user.visits + 1 });
+
+// this is safe: one lock covers the read and the write
+usersTable.updateOneWhere(
+  (entry) => entry.email === email,
+  (entry) => ({ visits: entry.visits + 1 }),
+);
+```
+
+### Update Entries Matching a Predicate
+
+`updateWhere` updates every match and returns the updated entries, or an empty array when nothing matched. The second argument is either a function returning a patch for a given entry, or a patch object applied to every match.
+
+```js
+// computed per entry
+const promoted = usersTable.updateWhere(
+  (entry) => entry.role === 'editor',
+  (entry) => ({ role: 'admin', promotedFrom: entry.role }),
+);
+
+// the same patch for every match
+usersTable.updateWhere((entry) => entry.access === 'revoked', {
+  active: false,
+});
+```
+
+An updater that mutates its entry in place and returns nothing works as well:
+
+```js
+usersTable.updateWhere(
+  (entry) => entry.role === 'editor',
+  (entry) => {
+    entry.active = true;
+  },
+);
+```
+
+> **Note:**
+> `_id` is always taken from the matched entry. An updater cannot drop it or redirect the write to a different row.
+
+### Update a Single Entry Matching a Predicate
+
+`updateOneWhere` updates the **first** match only and returns the updated entry, or `null` when nothing matched.
+
+```js
+const user = usersTable.updateOneWhere(
+  (entry) => entry.email === 'john@email.com',
+  { active: false },
+);
+```
+
+### Soft Delete Entries Matching a Predicate
+
+`softDeleteWhere` returns the soft-deleted entries, or an empty array when nothing matched.
+
+```js
+const trashed = usersTable.softDeleteWhere(
+  (entry) => entry.access === 'revoked',
+);
+```
+
+### Permanently Delete Entries Matching a Predicate
+
+`deleteWhere` returns the entries as they were before deletion, or an empty array when nothing matched.
+
+```js
+const removed = usersTable.deleteWhere((entry) => entry.access === 'revoked');
+```
+
+All four methods exclude soft-deleted entries from matching by default, and accept the same options as `find`. Pass `onlyTrashed` to purge the trash:
+
+```js
+usersTable.deleteWhere((entry) => entry._updatedAt < cutoff, {
+  onlyTrashed: true,
+});
 ```
 
 ## Project Details
