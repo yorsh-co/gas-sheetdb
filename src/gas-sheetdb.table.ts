@@ -67,7 +67,7 @@ class _GasSheetDbTable {
    * name. Applies basic formatting including alternating
    * row colors and a frozen header row.
    */
-  _insertSheet(): GoogleAppsScript.Spreadsheet.Sheet {
+  private _insertSheet(): GoogleAppsScript.Spreadsheet.Sheet {
     let newSheetName = this.sheetName;
 
     if (!newSheetName) {
@@ -776,7 +776,7 @@ class _GasSheetDbTable {
    * Methods that need to read and then write within one lock compose the
    * private `_*Unlocked` cores instead.
    */
-  _withLock<T>(callback: () => T): T {
+  private _withLock<T>(callback: () => T): T {
     return this.lockService.withLock(this.lockScope, () => {
       SpreadsheetApp.flush();
 
