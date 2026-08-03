@@ -48,6 +48,18 @@ interface GasSheetDbTableConstructorOptions {
   lockService: GasSheetDbLockService;
 }
 
+/** Matches entries in the predicate-based query, update and delete methods. */
+type GasSheetDbPredicate = (entry: GasSheetDbEntry) => boolean;
+
+/**
+ * The change `updateWhere()`/`updateOneWhere()` applies to each matched
+ * entry: either a patch object applied to every match, or a function
+ * returning a patch for a given entry. A function that mutates its entry in
+ * place and returns nothing is honoured too.
+ */
+type GasSheetDbUpdate =
+  GasSheetDbEntry | ((entry: GasSheetDbEntry) => GasSheetDbEntry | void);
+
 /** Options for `_GasSheetDbTable#find()`. */
 interface GasSheetDbFindOptions {
   withTrashed?: boolean;

@@ -291,6 +291,52 @@ class _GasSheetDbTable {
     );
   }
 
+  /**
+   * Update every entry matching a predicate, holding a single lock across
+   * both the read and the write.
+   *
+   * `update` is either a patch object applied to every match, or a function
+   * returning a patch for a given entry. A function that mutates its entry
+   * in place and returns nothing is honoured too.
+   *
+   * Returns the updated entries, or an empty array when nothing matched.
+   */
+  updateWhere(
+    predicateFn: GasSheetDbPredicate,
+    update: GasSheetDbUpdate,
+    options: GasSheetDbFindOptions = {},
+  ): GasSheetDbEntry[] {
+    return this._withLock(() => {
+      const entries = this._findUnlocked(options).filter(predicateFn);
+
+      if (!entries.length) return [];
+
+      return this._updateManyUnlocked(
+        entries.map((entry) => this._resolveUpdate(entry, update)),
+      );
+    });
+  }
+
+  /**
+   * Update the first entry matching a predicate, holding a single lock
+   * across both the read and the write.
+   *
+   * Returns the updated entry, or `null` when nothing matched.
+   */
+  updateOneWhere(
+    predicateFn: GasSheetDbPredicate,
+    update: GasSheetDbUpdate,
+    options: GasSheetDbFindOptions = {},
+  ): GasSheetDbEntry | null {
+    return this._withLock(() => {
+      const entry = this._findUnlocked(options).find(predicateFn);
+
+      if (!entry) return null;
+
+      return this._updateManyUnlocked([this._resolveUpdate(entry, update)])[0]!;
+    });
+  }
+
   // =========================
   // SOFT DELETE
   // =========================
@@ -329,6 +375,25 @@ class _GasSheetDbTable {
     entries.forEach((e) => (e[_GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED] = false));
 
     return this.updateMany(entries);
+  }
+
+  /**
+   * Soft delete every entry matching a predicate, holding a single lock
+   * across both the read and the write.
+   *
+   * Already-trashed entries are excluded from matching by default.
+   *
+   * Returns the soft-deleted entries, or an empty array when nothing matched.
+   */
+  softDeleteWhere(
+    predicateFn: GasSheetDbPredicate,
+    options: GasSheetDbFindOptions = {},
+  ): GasSheetDbEntry[] {
+    return this.updateWhere(
+      predicateFn,
+      { [_GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED]: true },
+      options,
+    );
   }
 
   // =========================
@@ -384,6 +449,31 @@ class _GasSheetDbTable {
     entriesRowIndexes.forEach((rowIndex) => data.splice(rowIndex, 1));
 
     this._setTableBodyData(data);
+  }
+
+  /**
+   * Permanently delete every entry matching a predicate, holding a single
+   * lock across both the read and the write.
+   *
+   * Trashed entries are excluded from matching by default; pass
+   * `{ onlyTrashed: true }` to purge the trash.
+   *
+   * Returns the entries as they were before deletion, or an empty array
+   * when nothing matched.
+   */
+  deleteWhere(
+    predicateFn: GasSheetDbPredicate,
+    options: GasSheetDbFindOptions = {},
+  ): GasSheetDbEntry[] {
+    return this._withLock(() => {
+      const entries = this._findUnlocked(options).filter(predicateFn);
+
+      if (!entries.length) return [];
+
+      this._deleteManyUnlocked(entries);
+
+      return entries;
+    });
   }
 
   // =========================
@@ -550,6 +640,25 @@ class _GasSheetDbTable {
 
       return _GasSheetDbValueCodec.encode(value);
     });
+  }
+
+  /**
+   * Resolve the patch to apply to a matched entry.
+   *
+   * An updater that mutates its entry in place and returns nothing falls
+   * back to the entry itself, so an in-place edit is never silently
+   * discarded. `_id` is taken from the matched entry last, so an updater can
+   * neither drop it nor redirect the write to a different row. Matched
+   * entries always carry one, since `_ensureRequiredMetadata` backfills it
+   * before any row is read.
+   */
+  private _resolveUpdate(
+    entry: GasSheetDbEntry,
+    update: GasSheetDbUpdate,
+  ): GasSheetDbEntry {
+    const patch = typeof update === 'function' ? update(entry) : update;
+
+    return { ...(patch || entry), _id: entry._id! };
   }
 
   /**
