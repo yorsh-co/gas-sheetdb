@@ -749,8 +749,9 @@ class _GasSheetDbTable {
 
     const now = new Date();
 
-    // counted rather than logged per row: a table filled by hand or by
-    // another process backfills every row at once
+    // gates the write below, and is logged as one line rather than one per
+    // row: a table filled by hand or by another process backfills every row
+    // at once
     let backfilledRows = 0;
 
     for (const row of data) {
@@ -779,14 +780,17 @@ class _GasSheetDbTable {
       if (backfilled) backfilledRows++;
     }
 
+    if (!backfilledRows) {
+      this._removeExtraRows(data.length);
+      return;
+    }
+
     this._setTableBodyData(data);
 
-    if (backfilledRows) {
-      this.logger.info('Backfilled system metadata', {
-        sheet: this.sheetName,
-        rows: backfilledRows,
-      });
-    }
+    this.logger.info('Backfilled system metadata', {
+      sheet: this.sheetName,
+      rows: backfilledRows,
+    });
   }
 
   // =========================

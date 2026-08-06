@@ -11,6 +11,10 @@
 - Both `logger` options are validated where they are passed, so an object missing `info` or `warn` — passing the `GasLogger` class rather than an instance, typically — fails when the instance or table is created instead of at the first log call, which may not come until a schema change or a decode failure, mid-operation and inside the write lock
 - Log lines for the events that alter a sheet without being asked for directly: `Created table sheet` and `Added columns` (`info`), `Backfilled system metadata` with a count of rows repaired (`info`), and `Failed to decode JSON cells` (`warn`). Unrecoverable failures are still thrown rather than logged, so nothing is emitted at `error` and unexpected errors reach the caller's handler unchanged
 
+### Fixed
+
+- `_ensureRequiredMetadata` no longer rewrites the entire table body on every read. It wrote the rows back unconditionally, so each `find...()` call spent a full-width `setValues` re-persisting values it had just read and found correct. The write now runs only when a row was actually repaired. The orphaned-row trim it also performed is preserved, so the shape of the sheet is unchanged
+
 ### Changed
 
 - Sheet creation now logs through the configured logger (`console` by default) instead of `Logger.log`, so the line reaches Cloud Logging alongside every other `gas-sheetdb` event
