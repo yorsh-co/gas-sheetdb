@@ -2,6 +2,14 @@
 
 ---
 
+## [1.2.1] - 2026-08-06
+
+### Fixed
+
+- Only remove extra roles in `_GasSheetDbTable._removeExtraRows` if the table body contains data to avoid the 'it is not possible to delete all non-frozen rows' exception thrown by SpreadsheetApp
+
+---
+
 ## [1.2.0] - 2026-08-03
 
 ### Added
