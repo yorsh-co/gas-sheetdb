@@ -199,6 +199,8 @@ declare class _GasSheetDbTable {
   private _ensureBlankRows;
   /**
    * Remove extra rows from the sheet.
+   * Exits early if the table body has no rows to avoid
+   * exception 'it is not possible to delete all non-frozen rows'.
    */
   private _removeExtraRows;
   /**

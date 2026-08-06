@@ -410,9 +410,13 @@ class _GasSheetDbTable {
   }
   /**
    * Remove extra rows from the sheet.
+   * Exits early if the table body has no rows to avoid
+   * exception 'it is not possible to delete all non-frozen rows'.
    */
   _removeExtraRows(tableBodyLen) {
+    if (!tableBodyLen) return;
     const lastTableBodyRow = this.rowNumbers.firstData - 1 + tableBodyLen;
+    if (lastTableBodyRow < this.rowNumbers.firstData) return;
     const maxRows = this.sheet.getMaxRows();
     const numExtraRows = maxRows - lastTableBodyRow;
     if (numExtraRows > 0) {
