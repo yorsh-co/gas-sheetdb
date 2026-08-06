@@ -15,6 +15,22 @@ const _GAS_SHEETDB_NON_PERSISTED_FIELDS: ReadonlySet<string> = new Set([
   '_runtime',
 ]);
 
+/**
+ * Used when no `logger` is injected. Deliberately minimal: it writes to the
+ * execution log, keeping the `[GasSheetDb]` prefix and appending meta as
+ * JSON so a bare console still shows it. It has no levels, no bindings and
+ * no sheet sink — inject a GasLogger for those; that logic lives there and
+ * only there.
+ */
+const _GAS_SHEETDB_DEFAULT_LOGGER: GasSheetDbLogger = (() => {
+  return Object.freeze({
+    info: (msg: string, meta?: Record<string, unknown>): void =>
+      console.log(`[GasSheetDb] ${msg}`, meta),
+    warn: (msg: string, meta?: Record<string, unknown>): void =>
+      console.warn(`[GasSheetDb] ${msg}`, meta),
+  });
+})();
+
 /** Scopes accepted by `lockScope`. */
 const _GAS_SHEETDB_LOCK_SCOPES: readonly GasSheetDbLockScope[] = Object.freeze([
   'script',

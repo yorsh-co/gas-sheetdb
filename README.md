@@ -30,7 +30,9 @@ Entries can be queried and updated through a `GasSheetDb` instance using ORM-lik
 - Accepts new entries inserted manually to the spreadsheet
 - Supports both bound and standalone spreadsheets
 - Uses Apps Script `LockService` for safer concurrent writes, with a configurable lock scope per instance or per table (full transactions are not yet supported)
-- Optionally accepts an injected lock service ([`gas-lock`](https://github.com/yorsh-co/gas-lock)) so nested locks across multiple services in one execution reuse a single lock instead of deadlocking- Written in TypeScript with generated JavaScript distribution
+- Optionally accepts an injected lock service ([`gas-lock`](https://github.com/yorsh-co/gas-lock)) so nested locks across multiple services in one execution reuse a single lock instead of deadlocking
+- Written in TypeScript with generated JavaScript distribution
+- Optionally accepts an injected logger ([`gas-logger`](https://github.com/yorsh-co/gas-logger), `console`, or any `info`/`warn` sink) to route schema and metadata events through your own levels, bindings and sheet sink
 - No external dependencies beyond built-in Apps Script services
 
 ### Example Usage
@@ -753,6 +755,64 @@ const sheetDb = new GasSheetDb({
 
 Omit `lockService` and `gas-sheetdb` acquires `LockService` locks directly, with no reentrancy protection — the standalone default, and unchanged behavior for existing callers.
 
+### Logging
+
+`gas-sheetdb` logs the handful of events that change your sheet without you asking for them directly:
+
+| Event                       | Level  | Meta                      |
+| --------------------------- | ------ | ------------------------- |
+| Created table sheet         | `info` | `sheet`                   |
+| Added columns               | `info` | `sheet`, `columns`        |
+| Backfilled system metadata  | `info` | `sheet`, `rows`           |
+| Failed to decode JSON cells | `warn` | `sheet`, `cells`, `error` |
+
+Failures `gas-sheetdb` cannot recover from are thrown, not logged, so nothing is ever reported at `error` — an unexpected error reaches your own handler with its stack intact.
+
+By default these go to the execution log via `console`, prefixed with `[GasSheetDb]`.
+
+#### Injecting a logger
+
+Pass any object exposing `info(msg, meta?)` and `warn(msg, meta?)` as `logger`. [`gas-logger`](https://github.com/yorsh-co/gas-logger) satisfies this directly, which is enough to persist the events above to a sheet, tag them, and level-filter them — `gas-sheetdb` inherits whatever the instance you hand it is configured with:
+
+```js
+const logger = new GasLogger({
+  sheetConfig: { sheetName: 'logs' },
+  sheetLevel: 'warn', // console gets everything; the sheet gets decode failures
+  bypassBufferLevels: ['warn'],
+  bindings: { app: 'crm' },
+});
+
+const sheetDb = new GasSheetDb({
+  useActiveSpreadsheet: true,
+  logger: logger.child({ module: 'sheetdb' }), // tags every gas-sheetdb line
+});
+```
+
+Plain `console` is accepted too, as is any custom sink of the same shape. An object missing `info` or `warn` is rejected when the instance or table is created, rather than at the first log call.
+
+#### Per-table loggers
+
+`logger` is overridable per table, and a table's own logger always wins — including when the `GasSheetDb` instance was given none:
+
+```js
+const sheetDb = new GasSheetDb({ useActiveSpreadsheet: true }); // no logger
+
+const usersTable = sheetDb.table({ sheetName: 'Users' }); // → execution log
+
+const auditTable = sheetDb.table({
+  sheetName: 'Audit',
+  logger: logger.child({ table: 'Audit' }), // → wherever `logger` writes
+});
+```
+
+Use it to send one sensitive table's events to their own sheet, or to bind per-table context without tagging every other table's lines with it.
+
+> [!NOTE]
+> **Flushing is yours to do.** `gas-sheetdb` never calls `flush()` — it has no request or execution boundary to flush on. If your logger buffers (`flushThreshold`), flush it yourself in a `finally` block, or list the levels you can't afford to lose under `bypassBufferLevels`.
+
+> [!IMPORTANT]
+> A sheet-backed logger writes to the spreadsheet **from inside the `gas-sheetdb` write lock** — `Added columns`, `Backfilled system metadata` and decode warnings all occur mid-operation. Each unbuffered line is a `SpreadsheetApp` round-trip that other executions wait on. Set `flushThreshold` so those writes batch outside the hot path, or keep `sheetLevel` at `warn`.
+
 ### Entry Point
 
 #### GasSheetDb
@@ -770,6 +830,7 @@ new GasSheetDb({
   rowNumbers, // optional instance-wide default
   lockScope, // optional, 'script' | 'document' | 'user'. Defaults to 'script'
   lockService, // optional, e.g. GasLock. Defaults to LockService directly
+  logger, // optional, e.g. GasLogger. Defaults to the execution log via console
 });
 ```
 
@@ -778,7 +839,7 @@ The resolved spreadsheet is available as sheetDb.spreadsheet.
 ##### Methods
 
 ```js
-GasSheetDb(...).table({ sheetName, rowNumbers, lockScope });
+GasSheetDb(...).table({ sheetName, rowNumbers, lockScope, logger });
 ```
 
 #### Table instance returned by GasSheetDb.table(...)

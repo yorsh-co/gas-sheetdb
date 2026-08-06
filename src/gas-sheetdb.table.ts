@@ -13,6 +13,7 @@ class _GasSheetDbTable {
   schema: _GasSheetDbTableSchema;
   lockScope: GasSheetDbLockScope;
   lockService: GasSheetDbLockService;
+  logger: GasSheetDbLogger;
 
   constructor({
     spreadsheet,
@@ -20,13 +21,19 @@ class _GasSheetDbTable {
     rowNumbers,
     lockScope,
     lockService,
+    logger,
   }: GasSheetDbTableConstructorOptions) {
     this.spreadsheet = spreadsheet;
     this.sheetName = sheetName;
     this.rowNumbers = rowNumbers; // Base-1 row numbers
     this.rowIndexes = this._deriveRowIndexes(); // Base-0 row indexes
+    this.logger = logger; // assigned before _ensureSheet(), which logs
     this.sheet = this._ensureSheet();
-    this.schema = new _GasSheetDbTableSchema(this.sheet, this.rowNumbers);
+    this.schema = new _GasSheetDbTableSchema(
+      this.sheet,
+      this.rowNumbers,
+      this.logger,
+    );
     this.lockScope = lockScope;
     this.lockService = lockService;
   }
@@ -99,7 +106,7 @@ class _GasSheetDbTable {
 
     newSheet.setFrozenRows(this.rowNumbers.columnKeys);
 
-    Logger.log('[GasSheetDb] Created new table sheet "%s"', newSheetName);
+    this.logger.info('Created table sheet', { sheet: newSheetName });
 
     return newSheet;
   }
@@ -136,7 +143,7 @@ class _GasSheetDbTable {
       _GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED,
     );
 
-    const entries = [];
+    const rows = [];
 
     for (let dataIndex = 0; dataIndex < data.length; dataIndex++) {
       const row = data[dataIndex];
@@ -147,12 +154,10 @@ class _GasSheetDbTable {
       // handle `withTrashed = false`
       if (!onlyTrashed && !withTrashed && row?.[isTrashedColIndex]) continue;
 
-      const entry = this._decodeRow(row || []);
-
-      entries.push(entry);
+      rows.push(row || []);
     }
 
-    return entries;
+    return this._decodeRows(rows);
   }
 
   /**
@@ -215,7 +220,7 @@ class _GasSheetDbTable {
       const data = entries.map((entry) => this._buildRow(entry));
       this._appendTableBodyData(data);
 
-      const insertedEntries = data.map((row) => this._decodeRow(row));
+      const insertedEntries = this._decodeRows(data);
 
       return insertedEntries;
     });
@@ -286,8 +291,8 @@ class _GasSheetDbTable {
     this._setTableBodyData(data);
 
     // return the entries in their post-`_buildRow` state
-    return updatedRowIndexes.map((rowIndex) =>
-      this._decodeRow(data[rowIndex]!),
+    return this._decodeRows(
+      updatedRowIndexes.map((rowIndex) => data[rowIndex]!),
     );
   }
 
@@ -668,14 +673,50 @@ class _GasSheetDbTable {
   }
 
   /**
+   * Decode raw sheet rows into entry objects.
+   *
+   * Cells whose stored JSON no longer parses fall back to their raw string.
+   * Those are counted across the whole batch and reported as a single log
+   * line, so one corrupt column cannot emit a log line per row — which, with
+   * a sheet-backed logger, would mean a sheet write per row inside the lock.
+   */
+  private _decodeRows(rows: GasSheetDbCellValue[][]): GasSheetDbEntry[] {
+    let failedCells = 0;
+    let firstError: unknown;
+
+    const onDecodeError = (err: unknown): void => {
+      if (!failedCells) firstError = err;
+      failedCells++;
+    };
+
+    const entries = rows.map((row) => this._decodeRow(row, onDecodeError));
+
+    if (failedCells) {
+      this.logger.warn('Failed to decode JSON cells', {
+        sheet: this.sheetName,
+        cells: failedCells,
+        error: (firstError as Error)?.message ?? String(firstError),
+      });
+    }
+
+    return entries;
+  }
+
+  /**
    * Decode a raw sheet row into an entry object.
    */
-  private _decodeRow(row: GasSheetDbCellValue[]): GasSheetDbEntry {
+  private _decodeRow(
+    row: GasSheetDbCellValue[],
+    onDecodeError?: (err: unknown) => void,
+  ): GasSheetDbEntry {
     const entry: GasSheetDbEntry = {};
 
     this.schema?.columnKeys?.forEach((key, colIndex) => {
       const raw = row[colIndex];
-      entry[key] = _GasSheetDbValueCodec.decode(raw === undefined ? '' : raw);
+      entry[key] = _GasSheetDbValueCodec.decode(
+        raw === undefined ? '' : raw,
+        onDecodeError,
+      );
     });
 
     return entry;
@@ -708,19 +749,44 @@ class _GasSheetDbTable {
 
     const now = new Date();
 
+    // counted rather than logged per row: a table filled by hand or by
+    // another process backfills every row at once
+    let backfilledRows = 0;
+
     for (const row of data) {
-      if (!row[idColIndex]) row[idColIndex] = this._generateId();
+      let backfilled = false;
 
-      if (!row[createdAtColIndex]) row[createdAtColIndex] = now;
+      if (!row[idColIndex]) {
+        row[idColIndex] = this._generateId();
+        backfilled = true;
+      }
 
-      if (!row[updatedAtColIndex]) row[updatedAtColIndex] = now;
+      if (!row[createdAtColIndex]) {
+        row[createdAtColIndex] = now;
+        backfilled = true;
+      }
+
+      if (!row[updatedAtColIndex]) {
+        row[updatedAtColIndex] = now;
+        backfilled = true;
+      }
 
       if (typeof row[isTrashedColIndex] !== 'boolean') {
         row[isTrashedColIndex] = false;
+        backfilled = true;
       }
+
+      if (backfilled) backfilledRows++;
     }
 
     this._setTableBodyData(data);
+
+    if (backfilledRows) {
+      this.logger.info('Backfilled system metadata', {
+        sheet: this.sheetName,
+        rows: backfilledRows,
+      });
+    }
   }
 
   // =========================

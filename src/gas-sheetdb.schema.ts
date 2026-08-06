@@ -4,14 +4,17 @@
 class _GasSheetDbTableSchema {
   sheet: GoogleAppsScript.Spreadsheet.Sheet;
   rowNumbers: GasSheetDbRowsReference;
+  logger: GasSheetDbLogger;
   columnKeys: string[]; // in practice, will be string[]
 
   constructor(
     sheet: GoogleAppsScript.Spreadsheet.Sheet,
     rowNumbers: GasSheetDbRowsReference,
+    logger: GasSheetDbLogger,
   ) {
     this.sheet = sheet;
     this.rowNumbers = rowNumbers;
+    this.logger = logger;
 
     this.columnKeys = this.loadColumnKeys();
   }
@@ -72,5 +75,10 @@ class _GasSheetDbTableSchema {
       .setValues([newColumnKeys]);
 
     this.columnKeys.push(...newColumnKeys);
+
+    this.logger.info('Added columns', {
+      sheet: this.sheet.getSheetName(),
+      columns: newColumnKeys,
+    });
   }
 }
