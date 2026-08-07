@@ -16,7 +16,7 @@
  * Usage: copy into the consuming package as `src/internal/`.
  *
  * @see https://github.com/yorsh-co/gas-sheetdb
- * @version 1.3.0
+ * @version 1.3.1
  */
 
 /** Row/column position config for a table's header and data rows. */
