@@ -6,5 +6,8 @@
  */
 declare const _GasSheetDbValueCodec: Readonly<{
   encode: (value: unknown) => GasSheetDbCellValue;
-  decode: (value: GasSheetDbCellValue) => unknown;
+  decode: (
+    value: GasSheetDbCellValue,
+    onError?: (err: unknown) => void,
+  ) => unknown;
 }>;

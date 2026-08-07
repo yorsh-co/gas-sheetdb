@@ -13,12 +13,14 @@ declare class _GasSheetDbTable {
   schema: _GasSheetDbTableSchema;
   lockScope: GasSheetDbLockScope;
   lockService: GasSheetDbLockService;
+  logger: GasSheetDbLogger;
   constructor({
     spreadsheet,
     sheetName,
     rowNumbers,
     lockScope,
     lockService,
+    logger,
   }: GasSheetDbTableConstructorOptions);
   /**
    * Derive base-0 data array row indexes from
@@ -235,6 +237,15 @@ declare class _GasSheetDbTable {
    * before any row is read.
    */
   private _resolveUpdate;
+  /**
+   * Decode raw sheet rows into entry objects.
+   *
+   * Cells whose stored JSON no longer parses fall back to their raw string.
+   * Those are counted across the whole batch and reported as a single log
+   * line, so one corrupt column cannot emit a log line per row — which, with
+   * a sheet-backed logger, would mean a sheet write per row inside the lock.
+   */
+  private _decodeRows;
   /**
    * Decode a raw sheet row into an entry object.
    */

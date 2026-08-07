@@ -7,6 +7,7 @@ declare class GasSheetDb {
   rowNumbers: GasSheetDbRowsReference;
   lockScope: GasSheetDbLockScope;
   lockService: GasSheetDbLockService;
+  logger: GasSheetDbLogger;
   constructor(options?: GasSheetDbOptions);
   /**
      * Resolve the spreadsheet from the provided source option.
@@ -19,6 +20,11 @@ declare class GasSheetDb {
    * Shared by the constructor and table(), so both reject bad input alike.
    */
   private _resolveLockScope;
+  /**
+   * Validate a logger, falling back to the library default when omitted.
+   * Shared by the constructor and table(), so both reject bad input alike.
+   */
+  private _resolveLogger;
   /**
    * Create a table wrapper for a sheet.
    */

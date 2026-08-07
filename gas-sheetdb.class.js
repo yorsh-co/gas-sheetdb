@@ -15,6 +15,7 @@ class GasSheetDb {
     };
     this.lockScope = this._resolveLockScope(options.lockScope);
     this.lockService = options.lockService ?? _GAS_SHEETDB_DEFAULT_LOCK_SERVICE;
+    this.logger = this._resolveLogger(options.logger);
   }
   /**
      * Resolve the spreadsheet from the provided source option.
@@ -64,10 +65,27 @@ class GasSheetDb {
     return lockScope;
   }
   /**
+   * Validate a logger, falling back to the library default when omitted.
+   * Shared by the constructor and table(), so both reject bad input alike.
+   */
+  _resolveLogger(logger) {
+    if (logger === undefined) return _GAS_SHEETDB_DEFAULT_LOGGER;
+    if (
+      !logger ||
+      typeof logger.info !== 'function' ||
+      typeof logger.warn !== 'function'
+    ) {
+      throw new Error(
+        '[GasSheetDb] Invalid "logger": expected an object exposing info(msg, meta?) and warn(msg, meta?) — e.g. a GasLogger instance, or console. Passing the GasLogger class rather than an instance is the usual cause.',
+      );
+    }
+    return logger;
+  }
+  /**
    * Create a table wrapper for a sheet.
    */
   table(options = {}) {
-    const { sheetName = null, rowNumbers = {}, lockScope } = options;
+    const { sheetName = null, rowNumbers = {}, lockScope, logger } = options;
     return new _GasSheetDbTable({
       spreadsheet: this.spreadsheet,
       sheetName,
@@ -80,6 +98,7 @@ class GasSheetDb {
           ? this.lockScope
           : this._resolveLockScope(lockScope),
       lockService: this.lockService,
+      logger: logger === undefined ? this.logger : this._resolveLogger(logger),
     });
   }
 }

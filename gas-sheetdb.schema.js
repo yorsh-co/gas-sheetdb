@@ -3,9 +3,10 @@
  * Manages sheet column keys and schema updates.
  */
 class _GasSheetDbTableSchema {
-  constructor(sheet, rowNumbers) {
+  constructor(sheet, rowNumbers, logger) {
     this.sheet = sheet;
     this.rowNumbers = rowNumbers;
+    this.logger = logger;
     this.columnKeys = this.loadColumnKeys();
   }
   /**
@@ -53,5 +54,9 @@ class _GasSheetDbTableSchema {
       )
       .setValues([newColumnKeys]);
     this.columnKeys.push(...newColumnKeys);
+    this.logger.info('Added columns', {
+      sheet: this.sheet.getSheetName(),
+      columns: newColumnKeys,
+    });
   }
 }

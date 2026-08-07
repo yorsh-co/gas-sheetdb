@@ -26,8 +26,13 @@ const _GasSheetDbValueCodec = (() => {
   };
   /**
    * Restore encoded sheet values back into JS values.
+   *
+   * A cell whose payload no longer parses falls back to its raw string.
+   * `onError` reports that to the caller rather than logging here: decoding
+   * runs once per cell, so a single corrupt column would otherwise emit one
+   * log line per row. Callers aggregate and log once per operation.
    */
-  const decode = (value) => {
+  const decode = (value, onError) => {
     if (typeof value !== 'string') {
       return value;
     }
@@ -35,7 +40,7 @@ const _GasSheetDbValueCodec = (() => {
       try {
         return JSON.parse(value.slice(PREFIXES.JSON.length));
       } catch (err) {
-        console.error(err);
+        onError?.(err);
       }
     }
     return value;

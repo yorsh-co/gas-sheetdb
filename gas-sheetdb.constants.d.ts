@@ -11,6 +11,14 @@ declare const _GAS_SHEETDB_SYSTEM_FIELDS: Readonly<{
  * Runtime-only fields added while reading rows but not persisted in the sheet.
  */
 declare const _GAS_SHEETDB_NON_PERSISTED_FIELDS: ReadonlySet<string>;
+/**
+ * Used when no `logger` is injected. Deliberately minimal: it writes to the
+ * execution log, keeping the `[GasSheetDb]` prefix and appending meta as
+ * JSON so a bare console still shows it. It has no levels, no bindings and
+ * no sheet sink — inject a GasLogger for those; that logic lives there and
+ * only there.
+ */
+declare const _GAS_SHEETDB_DEFAULT_LOGGER: GasSheetDbLogger;
 /** Scopes accepted by `lockScope`. */
 declare const _GAS_SHEETDB_LOCK_SCOPES: readonly GasSheetDbLockScope[];
 /**

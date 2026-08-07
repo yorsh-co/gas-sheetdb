@@ -12,6 +12,19 @@ const _GAS_SHEETDB_SYSTEM_FIELDS = Object.freeze({
  * Runtime-only fields added while reading rows but not persisted in the sheet.
  */
 const _GAS_SHEETDB_NON_PERSISTED_FIELDS = new Set(['_runtime']);
+/**
+ * Used when no `logger` is injected. Deliberately minimal: it writes to the
+ * execution log, keeping the `[GasSheetDb]` prefix and appending meta as
+ * JSON so a bare console still shows it. It has no levels, no bindings and
+ * no sheet sink — inject a GasLogger for those; that logic lives there and
+ * only there.
+ */
+const _GAS_SHEETDB_DEFAULT_LOGGER = (() => {
+  return Object.freeze({
+    info: (msg, meta) => console.log(`[GasSheetDb] ${msg}`, meta),
+    warn: (msg, meta) => console.warn(`[GasSheetDb] ${msg}`, meta),
+  });
+})();
 /** Scopes accepted by `lockScope`. */
 const _GAS_SHEETDB_LOCK_SCOPES = Object.freeze(['script', 'document', 'user']);
 /**

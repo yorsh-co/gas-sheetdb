@@ -4,10 +4,12 @@
 declare class _GasSheetDbTableSchema {
   sheet: GoogleAppsScript.Spreadsheet.Sheet;
   rowNumbers: GasSheetDbRowsReference;
+  logger: GasSheetDbLogger;
   columnKeys: string[];
   constructor(
     sheet: GoogleAppsScript.Spreadsheet.Sheet,
     rowNumbers: GasSheetDbRowsReference,
+    logger: GasSheetDbLogger,
   );
   /**
    * Load column key values from the sheet.
