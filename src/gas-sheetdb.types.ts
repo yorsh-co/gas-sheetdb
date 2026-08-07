@@ -29,6 +29,8 @@ interface GasSheetDbOptions {
   lockScope?: GasSheetDbLockScope;
   /** @default an internal fallback calling LockService directly, with no reentrancy protection */
   lockService?: GasSheetDbLockService;
+  /** @default an internal fallback writing to the execution log via console */
+  logger?: GasSheetDbLogger;
 }
 
 /** Options for `GasSheetDb.table()`. */
@@ -37,6 +39,8 @@ interface GasSheetDbTableOptions {
   rowNumbers?: Partial<GasSheetDbRowsReference>;
   /** Overrides the parent `GasSheetDb` instance's lockScope for this table only. */
   lockScope?: GasSheetDbLockScope;
+  /** Overrides the parent `GasSheetDb` instance's logger for this table only. */
+  logger?: GasSheetDbLogger;
 }
 
 /** Constructor options for the internal `_GasSheetDbTable` class. */
@@ -46,6 +50,7 @@ interface GasSheetDbTableConstructorOptions {
   rowNumbers: GasSheetDbRowsReference;
   lockScope: GasSheetDbLockScope;
   lockService: GasSheetDbLockService;
+  logger: GasSheetDbLogger;
 }
 
 /** Matches entries in the predicate-based query, update and delete methods. */
@@ -82,3 +87,22 @@ interface GasSheetDbLockService {
 }
 
 type GasSheetDbLockScope = 'script' | 'document' | 'user';
+
+/**
+ * Minimal logging surface gas-sheetdb needs. GasLogger
+ * (github.com/yorsh-co/gas-logger) satisfies it directly — pass an instance,
+ * or a `child()` of one, and gas-sheetdb's log lines inherit whatever sinks,
+ * levels and bindings that logger is configured with. Plain `console`
+ * satisfies it too. Omit it and gas-sheetdb writes to the execution log.
+ *
+ * Only `info` and `warn` are declared: every failure gas-sheetdb cannot
+ * recover from is thrown rather than logged, so there is nothing to report
+ * at `error`.
+ *
+ * Flushing a buffered logger is the caller's responsibility — gas-sheetdb
+ * owns no execution boundary to flush on.
+ */
+interface GasSheetDbLogger {
+  info(msg: string, meta?: Record<string, unknown>): void;
+  warn(msg: string, meta?: Record<string, unknown>): void;
+}
