@@ -53,10 +53,12 @@ declare class _GasSheetDbTable {
   private _findUnlocked;
   /**
    * Filter entries using a predicate.
+   *
+   * Returns an empty array when nothing matches.
    */
   findWhere(
     predicateFn: (entry: GasSheetDbEntry) => boolean,
-  ): GasSheetDbEntry[] | null;
+  ): GasSheetDbEntry[];
   /**
    * Find the first matching entry.
    */

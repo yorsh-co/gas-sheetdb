@@ -2,6 +2,14 @@
 
 ---
 
+## [1.3.1] - 2026-08-07
+
+### Fixed
+
+- `findWhere()` is no longer declared as returning `GasSheetDbEntry[] | null`. It is implemented with `Array#filter`, which always returns an array — an empty one is still truthy — so the `null` was unreachable and every TypeScript consumer was forced through a null check that could not fire. It now returns `GasSheetDbEntry[]`, matching `findTrashed()`, `updateWhere()`, `softDeleteWhere()` and `deleteWhere()`, which all return an empty array when nothing matches. No runtime change: the `null` branch was never taken, so existing null checks remain valid and simply become redundant
+
+---
+
 ## [1.3.0] - 2026-08-07
 
 ### Added

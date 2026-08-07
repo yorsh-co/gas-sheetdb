@@ -120,9 +120,11 @@ class _GasSheetDbTable {
   }
   /**
    * Filter entries using a predicate.
+   *
+   * Returns an empty array when nothing matches.
    */
   findWhere(predicateFn) {
-    return this.find().filter(predicateFn) || null;
+    return this.find().filter(predicateFn);
   }
   /**
    * Find the first matching entry.
