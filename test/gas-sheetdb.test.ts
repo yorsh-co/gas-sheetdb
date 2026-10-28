@@ -473,8 +473,6 @@ describe('table()', () => {
 
     expect(db.table().sheetName).toBe('gsd-table-2');
   });
-
-  it.todo('creates a sheet when rowNumbers.columnKeys is not 1');
 });
 
 describe('locking', () => {

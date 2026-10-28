@@ -18,10 +18,10 @@ class GasSheetDb {
   constructor(options: GasSheetDbOptions = {}) {
     this.spreadsheet = this._resolveSpreadsheet(options);
 
-    this.rowNumbers = {
-      ..._GAS_SHEET_DB_DEFAULT_ROW_NUMBERS,
-      ...options.rowNumbers,
-    };
+    this.rowNumbers = this._resolveRowNumbers(
+      _GAS_SHEET_DB_DEFAULT_ROW_NUMBERS,
+      options.rowNumbers,
+    );
 
     this.lockScope = this._resolveLockScope(options.lockScope);
     this.lockService = this._resolveLockService(options.lockService);
@@ -75,6 +75,34 @@ class GasSheetDb {
     }
 
     return activeSpreadsheet;
+  }
+
+  /**
+   * Merge a partial row configuration onto `base` and validate the result:
+   * both rows must be positive integers, with the data after the header.
+   * Shared by the constructor and table(), so both reject bad input alike.
+   */
+  private _resolveRowNumbers(
+    base: GasSheetDbRowsReference,
+    rowNumbers?: Partial<GasSheetDbRowsReference>,
+  ): GasSheetDbRowsReference {
+    const merged = { ...base, ...rowNumbers };
+
+    for (const key of ['columnKeys', 'firstData'] as const) {
+      if (!Number.isInteger(merged[key]) || merged[key] < 1) {
+        throw new Error(
+          `[GasSheetDb] Invalid "rowNumbers.${key}": ${String(merged[key])}. Expected a positive integer.`,
+        );
+      }
+    }
+
+    if (merged.firstData <= merged.columnKeys) {
+      throw new Error(
+        `[GasSheetDb] Invalid "rowNumbers": "firstData" (${merged.firstData}) must be greater than "columnKeys" (${merged.columnKeys}).`,
+      );
+    }
+
+    return merged;
   }
 
   /**
@@ -167,10 +195,7 @@ class GasSheetDb {
     return new _GasSheetDbTable({
       spreadsheet: this.spreadsheet,
       sheetName,
-      rowNumbers: {
-        ...this.rowNumbers,
-        ...rowNumbers,
-      },
+      rowNumbers: this._resolveRowNumbers(this.rowNumbers, rowNumbers),
       lockScope:
         lockScope === undefined
           ? this.lockScope

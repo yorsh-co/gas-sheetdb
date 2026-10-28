@@ -36,6 +36,9 @@ interface GasSheetDbSystemFields {
 /** A stored entry: arbitrary user properties plus persisted system metadata. */
 type GasSheetDbEntry = GasSheetDbSystemFields & Record<string, unknown>;
 
+/** A single raw sheet cell value, as returned by Range#getValues(). */
+type GasSheetDbCellValue = string | number | boolean | Date;
+
 type GasSheetDbLockScope = 'script' | 'document' | 'user';
 
 /**
@@ -45,10 +48,11 @@ type GasSheetDbLockScope = 'script' | 'document' | 'user';
 type GasSheetDbErrorCode = 'VALIDATION_ERROR' | 'NOT_FOUND' | 'CONFLICT';
 
 /**
- * Expected data failure (missing `_id`, unknown entry) thrown when gas-error
- * is not loaded; with gas-error present, its `GasValidationError` and
- * `GasNotFoundError` are thrown instead. Carries the same fields as
- * `GasError`. Configuration errors are plain `Error`s.
+ * Expected data failure (missing `_id`, unknown entry, duplicate `_id` on
+ * insert) thrown when gas-error is not loaded; with gas-error present, its
+ * `GasValidationError`, `GasNotFoundError` and `GasConflictError` are thrown
+ * instead. Carries the same fields as `GasError`. Configuration errors are
+ * plain `Error`s.
  */
 declare class GasSheetDbError extends Error {
   statusCode: number;
@@ -161,10 +165,22 @@ declare class _GasSheetDbTableSchema {
   sheet: GoogleAppsScript.Spreadsheet.Sheet;
   rowNumbers: GasSheetDbRowsReference;
   logger: GasSheetDbLogger;
-  /** Column keys as currently loaded from the sheet's header row. */
+  /**
+   * Column keys as currently loaded from the sheet's header row, one per
+   * header cell. A blank or repeated header is `''`.
+   */
   columnKeys: string[];
+  /** Header names repeated by a later column, from the last header read. */
+  duplicateKeys: string[];
 
-  /** Load column key values from the sheet. */
+  /**
+   * Set the column keys from a raw header row: every cell is read as a
+   * string, blank cells are ignored, and when a name repeats the first
+   * column wins and later ones are ignored like blanks.
+   */
+  setColumnKeys(headerRow: GasSheetDbCellValue[]): void;
+
+  /** Load column key values from the sheet, normalised by `setColumnKeys`. */
   loadColumnKeys(): string[];
 
   /** Reload the column key values from the sheet. */

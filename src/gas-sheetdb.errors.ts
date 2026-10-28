@@ -46,4 +46,11 @@ const _GasSheetDbErrors = Object.freeze({
       ? new GasNotFoundError(message)
       : new GasSheetDbError(message, 404, 'NOT_FOUND');
   },
+
+  /** 409 `CONFLICT`: the write would duplicate an existing `_id`. */
+  conflict(message: string): Error {
+    return typeof GasConflictError === 'function'
+      ? new GasConflictError(message)
+      : new GasSheetDbError(message, 409, 'CONFLICT');
+  },
 });

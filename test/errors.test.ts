@@ -36,10 +36,17 @@ class GasNotFoundError extends FakeGasError {
   }
 }
 
+class GasConflictError extends FakeGasError {
+  constructor(message = 'Conflict') {
+    super(message, { statusCode: 409, code: 'CONFLICT' });
+  }
+}
+
 const GAS_ERROR_GLOBALS = {
   GasError: FakeGasError,
   GasValidationError,
   GasNotFoundError,
+  GasConflictError,
 };
 
 /** A seeded table; `globals` are the optional peer libraries in scope. */
@@ -115,6 +122,21 @@ describe('without gas-error', () => {
     });
   });
 
+  it('a duplicate _id on insert is a 409 conflict error', () => {
+    const { table } = setupTable();
+    const [ann] = table.find();
+
+    const err = thrown(() => table.insert({ ...ann }));
+
+    expect(err.name).toBe('GasSheetDbError');
+    expect(err).toMatchObject({
+      message: `[GasSheetDb] Duplicate "_id": ${ann!._id}`,
+      statusCode: 409,
+      code: 'CONFLICT',
+      isOperational: true,
+    });
+  });
+
   it('keeps a stack trace', () => {
     const err = thrown(() => setupTable().table.update({ _id: 'nope' }));
 
@@ -148,6 +170,15 @@ describe('with gas-error', () => {
       statusCode: 404,
       code: 'NOT_FOUND',
     });
+  });
+
+  it('throws GasConflictError for a duplicate _id on insert', () => {
+    const { table } = setupTable(GAS_ERROR_GLOBALS);
+
+    const err = thrown(() => table.insert({ ...table.find()[0] }));
+
+    expect(err).toBeInstanceOf(GasConflictError);
+    expect(err).toMatchObject({ statusCode: 409, code: 'CONFLICT' });
   });
 
   it('falls back per error class when only some are defined', () => {
