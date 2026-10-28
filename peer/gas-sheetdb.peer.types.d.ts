@@ -39,6 +39,27 @@ type GasSheetDbEntry = GasSheetDbSystemFields & Record<string, unknown>;
 type GasSheetDbLockScope = 'script' | 'document' | 'user';
 
 /**
+ * Stable, machine-readable identifier of a data error. Values match
+ * gas-error's `GasErrorCode`, without depending on it.
+ */
+type GasSheetDbErrorCode = 'VALIDATION_ERROR' | 'NOT_FOUND' | 'CONFLICT';
+
+/**
+ * Expected data failure (missing `_id`, unknown entry) thrown when gas-error
+ * is not loaded; with gas-error present, its `GasValidationError` and
+ * `GasNotFoundError` are thrown instead. Carries the same fields as
+ * `GasError`. Configuration errors are plain `Error`s.
+ */
+declare class GasSheetDbError extends Error {
+  statusCode: number;
+  code: GasSheetDbErrorCode;
+  details: unknown;
+  isOperational: true;
+
+  private constructor();
+}
+
+/**
  * Minimal lock-service shape gas-sheetdb needs to guard its writes.
  * GasLock (github.com/yorsh-co/gas-lock) satisfies this directly — pass
  * it in to get reentrancy-safe nesting with your own LockService calls.

@@ -274,13 +274,17 @@ class _GasSheetDbTable {
 
     for (const entry of entries) {
       if (!entry._id) {
-        throw new Error('Cannot update entry without "_id"');
+        throw _GasSheetDbErrors.validation(
+          '[GasSheetDb] Cannot update entry without "_id"',
+        );
       }
 
       const rowIndex = rowIndexesById.get(entry._id);
 
       if (rowIndex === undefined) {
-        throw new Error(`Entry not found: ${entry._id}`);
+        throw _GasSheetDbErrors.notFound(
+          `[GasSheetDb] Entry not found: ${entry._id}`,
+        );
       }
 
       this._applyUpdateMetadata(entry);
@@ -438,13 +442,17 @@ class _GasSheetDbTable {
     const entriesRowIndexes = [];
     for (const entry of entries) {
       if (!entry._id) {
-        throw new Error('Cannot update entry without "_id"');
+        throw _GasSheetDbErrors.validation(
+          '[GasSheetDb] Cannot delete entry without "_id"',
+        );
       }
 
       const rowIndex = rowIndexesById.get(entry._id);
 
       if (rowIndex === undefined) {
-        throw new Error(`Entry not found: ${entry._id}`);
+        throw _GasSheetDbErrors.notFound(
+          `[GasSheetDb] Entry not found: ${entry._id}`,
+        );
       }
 
       entriesRowIndexes.push(rowIndex);
@@ -529,7 +537,7 @@ class _GasSheetDbTable {
       return;
     }
 
-    if (!data[0]?.length) throw new Error('Empty data');
+    if (!data[0]?.length) throw new Error('[GasSheetDb] Empty data');
 
     const tableBodyRange = this.sheet.getRange(
       this.rowNumbers.firstData,
@@ -547,7 +555,8 @@ class _GasSheetDbTable {
    * Append rows to the sheet.
    */
   private _appendTableBodyData(data: GasSheetDbCellValue[][]): void {
-    if (!data.length || !data[0]?.length) throw new Error('Empty data');
+    if (!data.length || !data[0]?.length)
+      throw new Error('[GasSheetDb] Empty data');
 
     this._ensureBlankRows(data.length);
 
@@ -604,7 +613,7 @@ class _GasSheetDbTable {
 
     if (idColIndex === -1) {
       throw new Error(
-        `Cannot map rows by "${_GAS_SHEETDB_SYSTEM_FIELDS.ID}": column does not exist on sheet "${this.sheetName}". Call find() at least once before update/delete.`,
+        `[GasSheetDb] Cannot map rows by "${_GAS_SHEETDB_SYSTEM_FIELDS.ID}": column does not exist on sheet "${this.sheetName}". Call find() at least once before update/delete.`,
       );
     }
 

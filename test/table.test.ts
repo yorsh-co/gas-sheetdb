@@ -288,7 +288,7 @@ describe('update', () => {
     const { table } = seeded();
 
     expect(() => table.update({ name: 'x' })).toThrow(
-      'Cannot update entry without "_id"',
+      '[GasSheetDb] Cannot update entry without "_id"',
     );
   });
 
@@ -296,7 +296,7 @@ describe('update', () => {
     const { table } = seeded();
 
     expect(() => table.update({ _id: 'nope' })).toThrow(
-      'Entry not found: nope',
+      '[GasSheetDb] Entry not found: nope',
     );
   });
 });
@@ -435,10 +435,10 @@ describe('soft delete and restore', () => {
     const { table } = seeded();
 
     expect(() => table.softDelete({ name: 'x' })).toThrow(
-      'Cannot update entry without "_id"',
+      '[GasSheetDb] Cannot update entry without "_id"',
     );
     expect(() => table.restore({ _id: 'nope' })).toThrow(
-      'Entry not found: nope',
+      '[GasSheetDb] Entry not found: nope',
     );
   });
 });
@@ -487,10 +487,10 @@ describe('delete', () => {
     const { table } = seeded();
 
     expect(() => table.deleteOne({ name: 'x' })).toThrow(
-      'Cannot update entry without "_id"',
+      '[GasSheetDb] Cannot delete entry without "_id"',
     );
     expect(() => table.deleteMany([{ _id: 'nope' }])).toThrow(
-      'Entry not found: nope',
+      '[GasSheetDb] Entry not found: nope',
     );
   });
 });
