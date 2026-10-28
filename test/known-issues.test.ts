@@ -11,7 +11,6 @@ describe('known issues (2.0.0)', () => {
   it.todo('M4: a user string starting with "__JSON__" is not decoded as JSON');
   it.todo('M1: blank rows are not returned as entries');
   it.todo('H4: rewriting the table body preserves formulas in untouched cells');
-  it.todo('H3: read methods do not take the lock');
   it.todo('C2: duplicate _id values are repaired');
   it.todo('M3: numeric header keys are read back as strings');
   it.todo('M5: insertMany([]) returns an empty array instead of throwing');

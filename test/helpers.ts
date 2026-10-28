@@ -33,6 +33,28 @@ export function setup(
   return { GasSheetDb, mocks, db };
 }
 
+/**
+ * Loads the library and a `GasSheetDb` whose spy logger records, at each
+ * call, whether the fake `LockService` has a lock held (`lockedAtLog`).
+ * `globals` adds context globals, such as a fake `GasLock`.
+ */
+export function setupProbed(
+  options: GasSheetDbOptions = {},
+  globals: Record<string, unknown> = {},
+) {
+  const { GasSheetDb, mocks } = loadGasSheetDb({}, globals);
+  const lockedAtLog: boolean[] = [];
+  const record = (): void => {
+    lockedAtLog.push(mocks.isLocked());
+  };
+  const logger = {
+    info: vi.fn<GasSheetDbLogger['info']>(record),
+    warn: vi.fn<GasSheetDbLogger['warn']>(record),
+  };
+  const db = new GasSheetDb({ useActiveSpreadsheet: true, logger, ...options });
+  return { GasSheetDb, mocks, db, logger, lockedAtLog };
+}
+
 /** Loads the library and a named table, with a spy logger by default. */
 export function setupTable(
   sheetName = 'people',

@@ -1,14 +1,20 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createGasLoader } from 'gas-dev-config/test';
 import { describe, expect, it, vi } from 'vitest';
-import { FakeSpreadsheet } from './mocks';
+import { createMocks, FakeSpreadsheet } from './mocks';
 import {
   asSpreadsheet,
   createLockService,
   createLogger,
   header,
   setup,
+  setupProbed,
   setupTable,
   sheetOf,
 } from './helpers';
+import { loadGasSheetDb, ROOT, SOURCE_FILES } from './harness';
 
 describe('constructor: spreadsheet source', () => {
   it('uses the spreadsheet it is given', () => {
@@ -140,6 +146,207 @@ describe('constructor: lockScope', () => {
     expect(db.table({ sheetName: 'b', lockScope: 'document' }).lockScope).toBe(
       'document',
     );
+  });
+});
+
+describe('constructor: lockTimeoutMs', () => {
+  it('defaults to 30000', () => {
+    const { db } = setup();
+
+    expect(db.lockTimeoutMs).toBe(30000);
+    expect(db.table({ sheetName: 'a' }).lockTimeoutMs).toBe(30000);
+  });
+
+  it.each([
+    ['zero', 0],
+    ['negative', -1],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['a string', '5000'],
+    ['null', null],
+  ])('rejects %s', (_label, value) => {
+    const { GasSheetDb } = setup();
+
+    expect(
+      () => new GasSheetDb({ lockTimeoutMs: value as unknown as number }),
+    ).toThrow('[GasSheetDb] Invalid "lockTimeoutMs"');
+  });
+
+  it('rejects an invalid value on table()', () => {
+    const { db } = setup();
+
+    expect(() => db.table({ lockTimeoutMs: -5 })).toThrow(
+      '[GasSheetDb] Invalid "lockTimeoutMs": -5',
+    );
+  });
+
+  it('lets a table override the instance value', () => {
+    const { db } = setup({ lockTimeoutMs: 5000 });
+
+    expect(db.table({ sheetName: 'a' }).lockTimeoutMs).toBe(5000);
+    expect(db.table({ sheetName: 'b', lockTimeoutMs: 100 }).lockTimeoutMs).toBe(
+      100,
+    );
+  });
+});
+
+describe('constructor: lockService', () => {
+  it.each([
+    ['null', null],
+    ['an empty object', {}],
+    ['a string', 'GasLock'],
+    [
+      'the LockService global',
+      { getScriptLock: () => null, getDocumentLock: () => null },
+    ],
+  ])('rejects %s', (_label, lockService) => {
+    const { GasSheetDb } = setup();
+
+    expect(
+      () =>
+        new GasSheetDb({
+          lockService: lockService as unknown as GasSheetDbLockService,
+        }),
+    ).toThrow(/^\[GasSheetDb\] Invalid "lockService".*LockService/);
+  });
+
+  it('accepts an object exposing withLock', () => {
+    const { GasSheetDb } = setup();
+    const { lockService } = createLockService();
+
+    expect(() => new GasSheetDb({ lockService })).not.toThrow();
+  });
+});
+
+describe('default lock service', () => {
+  it('uses the GasLock global when present, with scope and timeout', () => {
+    const gasLock = createLockService();
+    const { db, mocks } = setupProbed(
+      { lockScope: 'user', lockTimeoutMs: 1234 },
+      { GasLock: gasLock.lockService },
+    );
+    const table = db.table({ sheetName: 'people' });
+    gasLock.withLock.mockClear();
+
+    table.insert({ name: 'Ann' });
+
+    expect(gasLock.withLock).toHaveBeenCalledExactlyOnceWith(
+      'user',
+      expect.any(Function),
+      { timeoutMs: 1234 },
+    );
+    expect(mocks.LockService.getUserLock).not.toHaveBeenCalled();
+  });
+
+  it('uses the fallback when GasLock is absent', () => {
+    const { table, mocks } = setupTable('people', { lockTimeoutMs: 777 });
+
+    table.insert({ name: 'Ann' });
+
+    const lock = mocks.LockService.getScriptLock.mock.results.at(-1)?.value;
+    expect(lock.waitLock).toHaveBeenCalledWith(777);
+  });
+
+  it('resolves GasLock at each acquisition, not at construction', () => {
+    const { GasSheetDb, mocks } = loadGasSheetDb();
+    const db = new GasSheetDb({ useActiveSpreadsheet: true });
+    const table = db.table({ sheetName: 'people' });
+    const gasLock = createLockService();
+    // the library's own realm, where a later-evaluated gas-lock would define it
+    const context = (GasSheetDb.constructor as FunctionConstructor)(
+      'return globalThis',
+    )() as Record<string, unknown>;
+    mocks.LockService.getScriptLock.mockClear();
+
+    context.GasLock = gasLock.lockService;
+    table.insert({ name: 'Ann' });
+
+    expect(gasLock.withLock).toHaveBeenCalledOnce();
+    expect(mocks.LockService.getScriptLock).not.toHaveBeenCalled();
+  });
+
+  it('falls back when GasLock is not initialised yet', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gas-sheetdb-'));
+    const trailing = join(dir, 'late-gas-lock.ts');
+    // GasLock is declared after the library already used it, as when
+    // gas-lock's file is evaluated later than a top-level GasSheetDb: reading
+    // the binding then throws a ReferenceError.
+    writeFileSync(
+      trailing,
+      `const earlyDb = new GasSheetDb({ useActiveSpreadsheet: true });
+       earlyDb.table({ sheetName: 'early' }).insert({ name: 'Ann' });
+       const GasLock = { withLock: () => { throw new Error('unexpected'); } };`,
+    );
+    try {
+      const mocks = createMocks();
+      const load = createGasLoader<{ GasSheetDb: typeof GasSheetDb }>({
+        files: [...SOURCE_FILES.map((f) => `src/${f}`), trailing],
+        exports: ['GasSheetDb'],
+        root: ROOT,
+      });
+
+      expect(() =>
+        load({
+          SpreadsheetApp: mocks.SpreadsheetApp,
+          LockService: mocks.LockService,
+          Utilities: mocks.Utilities,
+          console: mocks.console,
+          Error,
+          Date,
+        }),
+      ).not.toThrow();
+      expect(mocks.LockService.getScriptLock).toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('sheet creation race', () => {
+  it('reuses a sheet another execution created before the lock was taken', () => {
+    const { db, mocks } = setup({ logger: createLogger() });
+    const existing = mocks.activeSpreadsheet.insertSheet('people');
+    mocks.activeSpreadsheet.insertSheet.mockClear();
+    mocks.activeSpreadsheet.getSheetByName.mockImplementationOnce(() => null);
+
+    const table = db.table({ sheetName: 'people' });
+
+    expect(table.sheet).toBe(existing);
+    expect(mocks.activeSpreadsheet.insertSheet).not.toHaveBeenCalled();
+  });
+
+  it('does not log a creation it did not perform', () => {
+    const logger = createLogger();
+    const { db, mocks } = setup({ logger });
+    mocks.activeSpreadsheet.insertSheet('people');
+    mocks.activeSpreadsheet.getSheetByName.mockImplementationOnce(() => null);
+
+    db.table({ sheetName: 'people' });
+
+    expect(logger.info).not.toHaveBeenCalled();
+  });
+
+  it('creates the missing sheet while holding the lock', () => {
+    const { db, mocks } = setup();
+    let lockedOnInsert = false;
+    const insert = mocks.activeSpreadsheet.insertSheet.getMockImplementation()!;
+    mocks.activeSpreadsheet.insertSheet.mockImplementation((name: string) => {
+      lockedOnInsert = mocks.isLocked();
+      return insert(name);
+    });
+
+    db.table({ sheetName: 'people' });
+
+    expect(lockedOnInsert).toBe(true);
+  });
+
+  it('does not take the lock when the sheet exists', () => {
+    const { db, mocks } = setup();
+    mocks.activeSpreadsheet.insertSheet('people');
+
+    db.table({ sheetName: 'people' });
+
+    expect(mocks.LockService.getScriptLock).not.toHaveBeenCalled();
   });
 });
 
@@ -286,13 +493,25 @@ describe('locking', () => {
   });
 
   it('throws when the document lock is unavailable', () => {
-    const { table } = setupTable(
-      'people',
+    const { db, mocks } = setup(
+      { lockScope: 'document' },
+      { unavailable: ['document'] },
+    );
+    mocks.activeSpreadsheet.insertSheet('people');
+    const table = db.table({ sheetName: 'people' });
+
+    expect(() => table.find()).toThrow(
+      'LockService returned no lock for scope "document"',
+    );
+  });
+
+  it('throws on creating a sheet when the document lock is unavailable', () => {
+    const { db } = setup(
       { lockScope: 'document' },
       { unavailable: ['document'] },
     );
 
-    expect(() => table.find()).toThrow(
+    expect(() => db.table({ sheetName: 'people' })).toThrow(
       'LockService returned no lock for scope "document"',
     );
   });
@@ -315,11 +534,14 @@ describe('locking', () => {
       lockService,
     });
 
+    withLock.mockClear();
+
     table.insert({ name: 'Ann' });
 
     expect(withLock).toHaveBeenCalledExactlyOnceWith(
       'document',
       expect.any(Function),
+      { timeoutMs: 30000 },
     );
     expect(mocks.LockService.getDocumentLock).not.toHaveBeenCalled();
   });
@@ -335,6 +557,7 @@ describe('locking', () => {
       },
     };
     const { table, mocks } = setupTable('people', { lockService });
+    events.length = 0;
     mocks.SpreadsheetApp.flush.mockImplementation(() => {
       events.push('flush');
     });
@@ -346,6 +569,7 @@ describe('locking', () => {
 
   it('flushes inside the default lock', () => {
     const { table, mocks } = setupTable();
+    mocks.flushLockStates.length = 0;
 
     table.insert({ name: 'Ann' });
 
