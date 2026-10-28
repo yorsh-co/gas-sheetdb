@@ -377,6 +377,9 @@ usersTable.insertMany([
 > [!NOTE]
 > `insert` and `insertMany` mutate the entry objects passed in, adding `_id`, `_createdAt`, `_updatedAt` and `_isDeleted` in place.
 
+> [!IMPORTANT]
+> An `_id` that is already stored, or that appears twice in the batch, throws a `409` `CONFLICT` error before anything is written. An entry returned by `find()` carries its `_id`, so it cannot be inserted again: remove its `_id` and the other system fields to insert a copy, or use `update`. `insertMany([])` returns `[]`.
+
 ### Read All Entries
 
 ```js
@@ -689,6 +692,8 @@ Entries can be added manually to the sheet table. Metadata will be applied autom
 
 This is useful for importing data directly to the sheet from another source such as a file (.csv, .xlsx etc.) or via copy and paste.
 
+Rows that are entirely empty are not entries: they are skipped and given no metadata. If several rows share an `_id`, the topmost keeps it and the others are assigned a new one.
+
 ### Formula columns
 
 Formula columns, including array-formula spills, can be added to a table sheet. Writes only touch the cells whose value changes, so formulas are preserved and manual edits elsewhere are never overwritten. Setting a formula cell to a different value in an entry replaces its formula.
@@ -835,12 +840,13 @@ Use it to send one sensitive table's events to their own sheet, or to bind per-t
 
 Data errors are thrown with a stable `statusCode` and `code`:
 
-| Cause                                                        | `statusCode` | `code`             |
-| ------------------------------------------------------------ | ------------ | ------------------ |
-| Missing `_id` on `update`, `softDelete`, `restore`, `delete` | `400`        | `VALIDATION_ERROR` |
-| No entry with the given `_id`                                | `404`        | `NOT_FOUND`        |
+| Cause                                                          | `statusCode` | `code`             |
+| -------------------------------------------------------------- | ------------ | ------------------ |
+| Missing `_id` on `update`, `softDelete`, `restore`, `delete`   | `400`        | `VALIDATION_ERROR` |
+| No entry with the given `_id`                                  | `404`        | `NOT_FOUND`        |
+| `insert` of an `_id` that already exists or repeats in a batch | `409`        | `CONFLICT`         |
 
-When [`gas-error`](https://github.com/yorsh-co/gas-error) is loaded, these are its `GasValidationError` and `GasNotFoundError`, so `GasError.handle` reports them with the right status instead of a generic 500. Otherwise they are a `GasSheetDbError` carrying the same `statusCode`, `code`, `details` and `isOperational` fields.
+When [`gas-error`](https://github.com/yorsh-co/gas-error) is loaded, these are its `GasValidationError`, `GasNotFoundError` and `GasConflictError`, so `GasError.handle` reports them with the right status instead of a generic 500. Otherwise they are a `GasSheetDbError` carrying the same `statusCode`, `code`, `details` and `isOperational` fields.
 
 ```js
 try {
@@ -877,6 +883,8 @@ new GasSheetDb({
 ```
 
 The resolved spreadsheet is available as sheetDb.spreadsheet.
+
+`rowNumbers` is validated once a table's override is merged onto the instance's: `columnKeys` and `firstData` must be positive integers, and `firstData` must be greater than `columnKeys`. Rows between the header and `firstData` are never written into.
 
 ##### Methods
 
