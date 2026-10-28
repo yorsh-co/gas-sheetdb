@@ -2,6 +2,69 @@
 
 ---
 
+## [2.0.0] - 2026-10-28
+
+### Added
+
+- `findWhere()` and `findOneWhere()` take the same `GasSheetDbFindOptions` as `find()` and the `*Where` writers (`withTrashed`, `onlyTrashed`); trashed entries stay excluded by default
+- `lockTimeoutMs` option on `GasSheetDb` and `table()` (default `30000`; a table overrides the instance), passed to every `lockService.withLock` call. It must be a positive, finite number
+- Typed data errors: a missing `_id` throws a 400 `VALIDATION_ERROR`, an unknown `_id` a 404 `NOT_FOUND` and a duplicate `_id` on insert a 409 `CONFLICT`. When [`gas-error`](https://github.com/yorsh-co/gas-error) is loaded they are its `GasValidationError`, `GasNotFoundError` and `GasConflictError`, so `GasError.handle` reports them correctly; otherwise they are a `GasSheetDbError` with the same `statusCode`, `code`, `details` and `isOperational` fields. Both are still `instanceof Error`. Configuration errors remain plain `Error`s
+- Vitest test suite with in-memory Apps Script service mocks that model Sheets' value coercion, grid bounds and frozen-row rules
+
+### Changed
+
+- **BREAKING:** `sheetName` is required. `table()` throws a configuration `Error` when it is missing or not a non-empty string, and unnamed tables (`gsd-table-N`) are gone. `GasSheetDbTableOptions.sheetName` and the table's `sheetName` are now `string`
+- **BREAKING:** `new GasSheetDb({ useActiveSpreadsheet: false })` with no other spreadsheet source throws instead of silently using the active spreadsheet
+- **BREAKING:** strings are stored as text, exactly as given, so number-, boolean- and date-looking strings (`'0012'`, `'TRUE'`, `'2024-01-02'`, `'1-2'`) now read back as strings rather than as the number, boolean or `Date` Sheets parsed them into. Consumers that relied on that coercion must pass real numbers, booleans and `Date`s, which are still stored natively
+- **BREAKING:** `find()`, `findWhere()`, `findOneWhere()` and `findTrashed()` no longer take the lock when the sheet needs no repair, and no longer delete trailing blank rows. A read takes the lock only to add missing system columns or backfill rows, then repairs and reads again under it. Code that relied on a read serializing with writers, or on a read trimming the sheet, must be updated. Writes no longer trim trailing blank rows either: rows are only added by inserts and removed by deletes
+- **BREAKING:** when no `lockService` is injected, the `GasLock` global is used if it is loaded, otherwise the minimal `LockService` fallback as before. It is looked up at each acquisition, so file load order does not matter. `lockService` on the instance and on tables is never `undefined`: it is the default service, which resolves `GasLock` itself. Nothing needs to be configured to use [`gas-lock`](https://github.com/yorsh-co/gas-lock)
+- **BREAKING:** every error message now carries the `[GasSheetDb]` prefix (`Empty data`, `Cannot map rows by "_id"`, `Entry not found`, `Cannot update entry without "_id"`), and deleting an entry without an `_id` now says `Cannot delete` rather than `Cannot update`. Code that matches on message text must be updated; match on `code` instead
+- **BREAKING:** `rowNumbers` is validated when a `GasSheetDb` or a table is created, after the table's override is merged onto the instance's: `columnKeys` and `firstData` must be positive integers and `firstData` must be greater than `columnKeys`. Values that were silently accepted, such as `0`, a fraction or `firstData <= columnKeys`, now throw. Inserts append below the last non-blank row of the table, never above `firstData`, so a spacer row between the header and `firstData` is never written into
+- **BREAKING:** `insertMany([])` returns `[]` instead of throwing `Empty data`; `updateMany`, `softDeleteMany` and `restoreMany` return `[]` and `deleteMany` returns nothing, none of them taking the lock. Code that relied on the throw must check the batch itself
+- **BREAKING:** `insert` and `insertMany` throw a 409 `CONFLICT` error, `Duplicate "_id": <id>`, when an entry's `_id` is already stored or appears twice in the batch, before anything is written or any entry is changed. Inserting an entry obtained from `find()` now throws: strip `_id` and the other system fields to insert a copy, or use `update` to change the stored entry
+- A table sheet that does not exist is now created under the lock, so `table()` can block, or throw when the lock cannot be acquired
+- Lint, TypeScript and Prettier configuration and the test loader come from [`gas-dev-config`](https://github.com/yorsh-co/gas-dev-config)
+- Dependabot groups development dependencies into one weekly pull request
+- `npm run typecheck` also covers `test/` through `tsconfig.test.json`, and type-checks `peer/gas-sheetdb.peer.types.d.ts` standalone; `npm run check` runs the test suite and `gas-dev-config check`
+- The vendored `GasLock` declaration is the canonical copy from gas-lock's `peer/`, at 1.1.0
+
+### Fixed
+
+- The default logger no longer prints a literal `undefined` when a log line has no meta
+- Strings written to a sheet were parsed by Sheets as if typed: `=IMPORTXML(...)` or `=HYPERLINK(...)` in user input became a live formula (formula injection), `0012` lost its leading zeros and `TRUE` or `1-2` turned into a boolean or a date. Every string, including JSON-encoded cells, backfilled ids and header keys, is now written as text. Updates still compare logical values, so unchanged string cells are not rewritten
+- A string that starts with `__JSON__` was read back as a parsed object. It is now encoded as JSON and decodes to the identical string; cells already stored read as before
+- A text or JSON-encoded value longer than 49,999 characters, a `bigint`, a `symbol`, a `function` and a value that does not serialize to JSON throw a 400 `VALIDATION_ERROR` naming the column, with `details` `{ column, reason }`, before anything is written or any passed object is changed. They used to fail inside Sheets, or write a truncated or corrupt cell
+- Fully blank rows inside the data range, such as a row whose contents a person cleared, are no longer entries: reads skip them and the metadata backfill leaves them empty, where they were returned as empty entries and given an `_id`. A row is blank when every cell reads `''`, so a row whose only content is a formula that returns a value is still an entry
+- `table()` and the constructor no longer create a sheet when `rowNumbers.columnKeys` is greater than `1`: row banding ran past the end of the grid and threw `Those rows are out of bounds.`
+- `updateWhere`, `updateOneWhere`, `deleteWhere` and the other writers that repair the sheet before reading no longer append a second set of system columns when the header was edited after the table was created: the cached header is reloaded first
+- Header cells are read as strings, so a numeric header such as `2024` matches the entry key `'2024'`; every write used to append another `2024` column. Blank header cells are ignored: they get no key on entries and their cells are never written. When a header name repeats, the first column wins, later ones are ignored like blanks, and `Duplicate column keys` is logged as a warning once per operation
+- `updateMany`, `softDeleteMany` and `restoreMany` validate every entry (`_id` present and found) before changing any passed object, adding columns or writing. A failure on a later entry used to leave the earlier entries mutated, and `softDelete` and `restore` set `_isDeleted` on the passed objects before the lock was taken. Successful writes still update the passed objects' `_updatedAt` and `_isDeleted`
+- The `_isDeleted` backfill keeps a non-boolean value's meaning instead of overwriting it with `false`: a blank becomes `false`, booleans are kept and anything else is converted with `Boolean(value)`, so `1` stays deleted and `0` is not. Deleted rows no longer reappear after a hand edit. The rows are counted in `Backfilled system metadata`. Not marked breaking: booleans and blanks behave as before, and the converted cells were previously rewritten to `false`, silently restoring entries
+- Duplicate `_id` values are repaired. When several rows share an `_id` the topmost keeps it and the others get a new one, logged once as `Reassigned duplicate ids`. A read that finds duplicates takes the lock to repair them, like any other backfill
+- `deleteMany`, `deleteOne` and the other direct deletes resolve the `_id` column from a header read taken under the lock instead of the cached one. After a person inserted or moved columns, the stale index could miss or match the wrong rows. `update`, `insert` and the predicate writers already reloaded the header under the lock
+- Formulas, including array-formula spills, in table rows are preserved. `update`, `softDelete`, `restore` and the system metadata backfill rewrote the whole table body from its computed values, turning every formula into a static value
+- Writes touch only the cells whose value changes, grouped into one `setValues` call per run of adjacent cells and rows, instead of rewriting the whole body. A cell an entry sets to the value it already has is not written. A manual edit made to another cell while an operation runs is no longer overwritten, and the cost no longer grows with the table size
+- Deletes remove the rows in place, bottom-up and one `deleteRows` call per run of adjacent rows, instead of rewriting the body. When every non-frozen row would be deleted, one row is cleared instead, as Sheets refuses to delete them all
+- Log lines are no longer emitted while the lock is held. `Created table sheet`, `Added columns`, `Backfilled system metadata` and `Failed to decode JSON cells` are queued and emitted in order once the lock is released, also when the operation throws. A sheet-backed logger such as `gas-logger` takes the script lock itself, and its release ended the `gas-sheetdb` critical section early. A logger that throws no longer fails or masks the operation; the failure is reported through `console`
+- Creating a table sheet no longer throws `A sheet with the name ... already exists` when another execution creates it between the lookup and the insert: the lookup is repeated under the lock
+- An invalid `lockService`, such as Apps Script's `LockService` global passed instead of `GasLock`, is rejected when the instance is created instead of failing on the first write
+
+- A 50,000 character text no longer fails inside Sheets with `Your input contains more than the maximum of 50000 characters in a single cell.`. Text is stored with a leading apostrophe, which counts towards Sheets' 50,000 character input limit, so text and JSON-encoded values hold at most 49,999 characters. Longer ones throw the 400 `VALIDATION_ERROR` before anything is written
+- Inserts land below the last entry when a column holds an open-ended array formula such as `=ARRAYFORMULA(IF(LEN(B2:B), ROW(B2:B), ""))`. Its blank output fills the sheet down to the last row and Sheets counts it as content, so rows were appended below it, after hundreds of blank rows. A row is now added after the last non-blank row of the table, reusing blank rows below it and adding rows only when the sheet runs out. Blank rows between entries are not filled
+- Inserts write only the cells that differ from the row they land in, so a spilled or formula cell in a column the entry does not set is no longer written, which broke the spill with `#REF!`
+
+### Removed
+
+- The unused `_runtime` non-persisted field and its internal constant; no code ever set it
+
+### Docs
+
+- Corrected the description of `LockService` semantics. Locks are owned per execution: a nested acquire succeeds immediately and does not deadlock, but releasing any handle ends the outer critical section early. The README's deadlock example, and the note that the document-lock default was dropped in `2.0.0` (it shipped in `1.2.0`), are fixed
+- The Logging section no longer advises buffering to keep log writes outside the hot path, as logs are emitted after the lock is released
+- Added a "Migrating to 2.0.0" section, the `filePushOrder` example now matches the shipped files and the subtree path, and the Logging section recommends `gas-logger` `1.2.0` or later. Fixed broken examples, the return values of the write operations, and the feature and planned-feature lists. Documented the canonical peer type declarations in `peer/gas-sheetdb.peer.types.d.ts`
+
+---
+
 ## [1.3.2] - 2026-10-27
 
 ### Fixed
@@ -50,7 +113,7 @@
 
 ### Fixed
 
-- Only remove extra roles in `_GasSheetDbTable._removeExtraRows` if the table body contains data to avoid the 'it is not possible to delete all non-frozen rows' exception thrown by SpreadsheetApp
+- Only remove extra rows in `_GasSheetDbTable._removeExtraRows` if the table body contains data to avoid the 'it is not possible to delete all non-frozen rows' exception thrown by SpreadsheetApp
 
 ---
 
@@ -70,7 +133,7 @@
 
 ### Fixed
 
-- **Regression:** deleting every remaining entry no longer throws `Empty data`. `deleteMany` splices the table body down to zero rows, and `_setTableBodyData` rejected the empty result instead of clearing the orphaned rows off the sheet. This restores the behaviour originally shipped in [0.1.1](#011---2026-07-15), which the TypeScript migration reverted. Previously reachable only by passing every entry to `deleteMany`; `deleteWhere` makes it trivially reachable with a broad predicate
+- **Regression:** deleting every remaining entry no longer throws `Empty data`. `deleteMany` splices the table body down to zero rows, and `_setTableBodyData` rejected the empty result instead of clearing the orphaned rows off the sheet. This restores the behaviour originally shipped in [0.1.1](#011---2026-07-15), which the TypeScript migration reverted. (Regressed again in 1.2.1 and restored in 1.3.2) Previously reachable only by passing every entry to `deleteMany`; `deleteWhere` makes it trivially reachable with a broad predicate
 - Concurrent writes are now actually serialized in web app executions. `getDocumentLock()` returns `null` outside the context of a containing document — including a web app's `doGet`/`doPost` — so the previous hard-coded document lock provided no mutual exclusion there, regardless of the script being container-bound. Concurrent writers could interleave between `getMaxRows()` and `getLastRow()`, surfacing as `Those rows are out of bounds.` from `_ensureBlankRows`.
 - Add missing `private` keyword before the `_GasSheetDbTable` methods `_insertSheet` and `_withLock`.
 
@@ -108,7 +171,7 @@
 
 ### Fixed
 
-- Add missing sheet name index incrimination to `_insertSheet` in `_GasSheetDbTable` to fix a potential infinite loop.
+- Add missing sheet name index incrimination to `_insertSheet` in `_GasSheetDbTable` to fix a potential infinite loop. (Regressed in 1.1.0 by the TypeScript migration and restored in 1.3.2)
 
 ---
 

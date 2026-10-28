@@ -16,7 +16,7 @@
  * Usage: copy into the consuming package as `src/internal/`.
  *
  * @see https://github.com/yorsh-co/gas-sheetdb
- * @version 1.3.2
+ * @version 2.0.0
  */
 
 /** Row/column position config for a table's header and data rows. */
@@ -36,14 +36,44 @@ interface GasSheetDbSystemFields {
 /** A stored entry: arbitrary user properties plus persisted system metadata. */
 type GasSheetDbEntry = GasSheetDbSystemFields & Record<string, unknown>;
 
+/** A single raw sheet cell value, as returned by Range#getValues(). */
+type GasSheetDbCellValue = string | number | boolean | Date;
+
 type GasSheetDbLockScope = 'script' | 'document' | 'user';
 
 /**
- * Minimal lock-service shape gas-sheetdb needs to guard its writes.
- * GasLock (github.com/yorsh-co/gas-lock) satisfies this directly — pass
- * it in to get reentrancy-safe nesting with your own LockService calls.
- * Omit it and gas-sheetdb falls back to acquiring Apps Script's
- * LockService directly, with no reentrancy protection.
+ * Stable, machine-readable identifier of a data error. Values match
+ * gas-error's `GasErrorCode`, without depending on it.
+ */
+type GasSheetDbErrorCode = 'VALIDATION_ERROR' | 'NOT_FOUND' | 'CONFLICT';
+
+/**
+ * Expected data failure (missing `_id`, unknown entry, duplicate `_id` on
+ * insert) thrown when gas-error is not loaded; with gas-error present, its
+ * `GasValidationError`, `GasNotFoundError` and `GasConflictError` are thrown
+ * instead. Carries the same fields as `GasError`. Configuration errors are
+ * plain `Error`s.
+ */
+declare class GasSheetDbError extends Error {
+  statusCode: number;
+  code: GasSheetDbErrorCode;
+  details: unknown;
+  isOperational: true;
+
+  private constructor();
+}
+
+/**
+ * Minimal lock-service shape gas-sheetdb needs to guard its reads and
+ * writes. GasLock (github.com/yorsh-co/gas-lock) satisfies this directly and
+ * is used automatically when loaded.
+ *
+ * Apps Script locks are owned per execution, not per handle: acquiring a
+ * scope the execution already holds succeeds at once, and `releaseLock()` on
+ * any handle releases the execution's lock. A service must therefore track
+ * what the execution holds, as GasLock does, so a nested acquire never ends
+ * the outer critical section early. Without GasLock, gas-sheetdb falls back
+ * to acquiring Apps Script's LockService directly, with no such tracking.
  */
 interface GasSheetDbLockService {
   withLock<T>(
@@ -64,6 +94,10 @@ interface GasSheetDbLockService {
  * recover from is thrown rather than logged, so there is nothing to report
  * at `error`.
  *
+ * Calls are made after gas-sheetdb has released its lock, so a sheet-backed
+ * logger may take its own lock and write without nesting inside it. A logger
+ * that throws is reported through `console` and never fails an operation.
+ *
  * Flushing a buffered logger is the caller's responsibility — gas-sheetdb
  * owns no execution boundary to flush on.
  */
@@ -81,7 +115,9 @@ interface GasSheetDbOptions {
   rowNumbers?: Partial<GasSheetDbRowsReference>;
   /** @default 'script' */
   lockScope?: GasSheetDbLockScope;
-  /** @default an internal fallback calling LockService directly, with no reentrancy protection */
+  /** @default 30000 */
+  lockTimeoutMs?: number;
+  /** @default the `GasLock` global when loaded, else an internal fallback calling LockService directly */
   lockService?: GasSheetDbLockService;
   /** @default an internal fallback writing to the execution log via console */
   logger?: GasSheetDbLogger;
@@ -89,10 +125,13 @@ interface GasSheetDbOptions {
 
 /** Options for `GasSheetDb.table()`. */
 interface GasSheetDbTableOptions {
-  sheetName?: string | null;
+  /** Name of the sheet backing the table; created when absent. */
+  sheetName: string;
   rowNumbers?: Partial<GasSheetDbRowsReference>;
   /** Overrides the parent `GasSheetDb` instance's lockScope for this table only. */
   lockScope?: GasSheetDbLockScope;
+  /** Overrides the parent `GasSheetDb` instance's lockTimeoutMs for this table only. */
+  lockTimeoutMs?: number;
   /** Overrides the parent `GasSheetDb` instance's logger for this table only. */
   logger?: GasSheetDbLogger;
 }
@@ -127,10 +166,22 @@ declare class _GasSheetDbTableSchema {
   sheet: GoogleAppsScript.Spreadsheet.Sheet;
   rowNumbers: GasSheetDbRowsReference;
   logger: GasSheetDbLogger;
-  /** Column keys as currently loaded from the sheet's header row. */
+  /**
+   * Column keys as currently loaded from the sheet's header row, one per
+   * header cell. A blank or repeated header is `''`.
+   */
   columnKeys: string[];
+  /** Header names repeated by a later column, from the last header read. */
+  duplicateKeys: string[];
 
-  /** Load column key values from the sheet. */
+  /**
+   * Set the column keys from a raw header row: every cell is read as a
+   * string, blank cells are ignored, and when a name repeats the first
+   * column wins and later ones are ignored like blanks.
+   */
+  setColumnKeys(headerRow: GasSheetDbCellValue[]): void;
+
+  /** Load column key values from the sheet, normalised by `setColumnKeys`. */
   loadColumnKeys(): string[];
 
   /** Reload the column key values from the sheet. */
@@ -156,7 +207,7 @@ declare class _GasSheetDbTable {
   private constructor();
 
   spreadsheet: GoogleAppsScript.Spreadsheet.Spreadsheet;
-  sheetName: string | null;
+  sheetName: string;
   /** Base-1 spreadsheet row numbers. */
   rowNumbers: GasSheetDbRowsReference;
   /** Base-0 data array row indexes, derived from `rowNumbers`. */
@@ -165,23 +216,33 @@ declare class _GasSheetDbTable {
   schema: _GasSheetDbTableSchema;
   lockScope: GasSheetDbLockScope;
   lockService: GasSheetDbLockService;
+  lockTimeoutMs: number;
   logger: GasSheetDbLogger;
 
   /**
    * Read all rows as objects.
-   * Adds runtime metadata to each entry.
    */
   find(options?: GasSheetDbFindOptions): GasSheetDbEntry[];
 
   /**
-   * Filter entries using a predicate.
+   * Filter entries using a predicate. Trashed entries are excluded by
+   * default; see `GasSheetDbFindOptions`.
    *
    * Returns an empty array when nothing matches.
    */
-  findWhere(predicateFn: GasSheetDbPredicate): GasSheetDbEntry[];
+  findWhere(
+    predicateFn: GasSheetDbPredicate,
+    options?: GasSheetDbFindOptions,
+  ): GasSheetDbEntry[];
 
-  /** Find the first matching entry. */
-  findOneWhere(predicateFn: GasSheetDbPredicate): GasSheetDbEntry | null;
+  /**
+   * Find the first matching entry. Trashed entries are excluded by default;
+   * see `GasSheetDbFindOptions`.
+   */
+  findOneWhere(
+    predicateFn: GasSheetDbPredicate,
+    options?: GasSheetDbFindOptions,
+  ): GasSheetDbEntry | null;
 
   /**
    * Find trashed entries.
@@ -309,11 +370,13 @@ declare class GasSheetDb {
   rowNumbers: GasSheetDbRowsReference;
   lockScope: GasSheetDbLockScope;
   lockService: GasSheetDbLockService;
+  lockTimeoutMs: number;
   logger: GasSheetDbLogger;
 
   /**
    * Create a table wrapper for a sheet. The sheet is created if it does not
-   * exist. `lockScope` and `logger` fall back to this instance's values.
+   * exist. Throws if `sheetName` is not a non-empty string. `lockScope`,
+   * `lockTimeoutMs` and `logger` fall back to this instance's values.
    */
-  table(options?: GasSheetDbTableOptions): _GasSheetDbTable;
+  table(options: GasSheetDbTableOptions): _GasSheetDbTable;
 }
