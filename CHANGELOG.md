@@ -2,6 +2,22 @@
 
 ---
 
+## [1.3.2] - 2026-10-27
+
+### Fixed
+
+- Deleting every remaining entry now empties the sheet. `deleteWhere()`, `deleteMany()` and `deleteOne()` reported the entries deleted but left their rows on the sheet whenever the table body would become empty, so they reappeared on the next read. The previously occupied rows are now cleared and the first body row is kept as an empty row, since Sheets refuses to delete all non-frozen rows. This was a regression of the fix shipped in 1.2.0
+- `deleteMany()` no longer removes an unrelated entry when the same entry appears more than once in the batch, or when several entries resolve to the same row. `deleteMany([a, a])` on `[a, b, c]` previously left `[c]`; it now leaves `[b, c]`
+- Calling `table()` without `sheetName` while the `gsd-table-0` sheet already exists no longer hangs. The default-name counter was never incremented, so the lookup looped until the execution timed out; the next free `gsd-table-N` is now used. This was a regression of the fix shipped in 1.0.1
+
+### Changed
+
+- Releases are published with [`gas-dev-release`](https://github.com/yorsh-co/gas-dev-release) instead of `scripts/release.sh`, which adds preflight checks and pushes the branch and tags atomically. The empty `gas-sheetdb.types.js` is no longer shipped
+- Tags use a `v` prefix, now created by the release tooling: versions are tagged `vX.Y.Z` and releases `dist/vX.Y.Z`
+- Bump the transitive dev dependency `brace-expansion` to resolve the high-severity advisory reported by `npm audit`
+
+---
+
 ## [1.3.1] - 2026-08-07
 
 ### Fixed

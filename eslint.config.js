@@ -1,7 +1,6 @@
 import eslint from '@eslint/js';
 import tseslint from 'typescript-eslint';
 import eslintConfigPrettier from 'eslint-config-prettier';
-import globals from 'globals';
 
 export default tseslint.config(
   { ignores: ['dist/**', '.worktrees/**', 'peer/**'] },
@@ -25,15 +24,6 @@ export default tseslint.config(
       // 'no-undef': 'off',
       'no-unused-vars': 'off',
       '@typescript-eslint/no-unused-vars': 'off',
-    },
-  },
-
-  // Node.js build scripts — ESM, full Node globals, no TS project linting.
-  {
-    files: ['scripts/**/*.js'],
-    languageOptions: {
-      sourceType: 'module',
-      globals: globals.node,
     },
   },
 
