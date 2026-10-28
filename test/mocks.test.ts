@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CELL_LIMIT_MESSAGE,
   COLUMNS_OUT_OF_BOUNDS_MESSAGE,
   DELETE_ALL_ROWS_MESSAGE,
   ROWS_OUT_OF_BOUNDS_MESSAGE,
@@ -83,6 +84,81 @@ describe('FakeSheet', () => {
     expect(() => range.setValues([['a'], ['b']])).toThrow(
       'The number of columns in the data does not match the number of columns in the range.',
     );
+  });
+
+  it('rejects a string input over 50,000 characters, apostrophe included', () => {
+    const sheet = new FakeSheet('s');
+    const range = sheet.getRange(1, 1, 1, 2);
+
+    expect(() => range.setValues([['a', 'x'.repeat(50_001)]])).toThrow(
+      CELL_LIMIT_MESSAGE,
+    );
+    expect(() => range.setValues([['a', `'${'x'.repeat(50_000)}`]])).toThrow(
+      'Your input contains more than the maximum of 50000 characters in a single cell.',
+    );
+    expect(sheet.getLastRow()).toBe(0);
+    expect(sheet.calls.setValues).toHaveLength(0);
+
+    range.setValues([['a', `'${'x'.repeat(49_999)}`]]);
+    expect(sheet.getRange(1, 2).getValues()[0]![0]).toHaveLength(49_999);
+  });
+
+  describe('spill', () => {
+    const FORMULA = '=ARRAYFORMULA(IF(LEN(B2:B), ROW(B2:B), ""))';
+
+    /** A spill in C2 that outputs `values` down the column. */
+    const spilled = (values: unknown[]) => {
+      const sheet = new FakeSheet('s');
+      sheet.spill(2, 3, values, FORMULA);
+      return sheet;
+    };
+
+    it('counts blank output as content for the last row and data range', () => {
+      const sheet = spilled(Array(999).fill(''));
+
+      expect(sheet.getLastRow()).toBe(1000);
+      expect(sheet.getLastColumn()).toBe(3);
+      expect(sheet.getDataRange().getValues()).toHaveLength(1000);
+    });
+
+    it('holds the formula in the anchor only', () => {
+      const sheet = spilled([2, 3]);
+
+      expect(sheet.getRange(1, 3, 4, 1).getFormulas()).toEqual([
+        [''],
+        [FORMULA],
+        [''],
+        [''],
+      ]);
+      expect(sheet.getRange(2, 3, 2, 1).getValues()).toEqual([[2], [3]]);
+    });
+
+    it('breaks when a value is written into a spilled cell', () => {
+      const sheet = spilled([2, 3, 4]);
+
+      sheet.getRange(3, 3).setValues([['typed']]);
+
+      expect(sheet.brokenSpills).toEqual([[2, 3]]);
+      expect(sheet.getRange(2, 3, 4, 1).getValues()).toEqual([
+        ['#REF!'],
+        ['typed'],
+        [''],
+        [''],
+      ]);
+      expect(sheet.getLastRow()).toBe(3);
+    });
+
+    it('does not break when a neighbouring cell is written', () => {
+      const sheet = spilled([2, 3]);
+
+      sheet.getRange(2, 1, 2, 2).setValues([
+        ['a', 'b'],
+        ['c', 'd'],
+      ]);
+
+      expect(sheet.brokenSpills).toEqual([]);
+      expect(sheet.getRange(2, 3, 2, 1).getValues()).toEqual([[2], [3]]);
+    });
   });
 
   it('returns formulas and the evaluator result for formula cells', () => {
