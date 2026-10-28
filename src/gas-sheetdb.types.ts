@@ -15,6 +15,12 @@ interface GasSheetDbSystemFields {
 /** A stored entry: arbitrary user properties plus persisted system metadata. */
 type GasSheetDbEntry = GasSheetDbSystemFields & Record<string, unknown>;
 
+/**
+ * Stable, machine-readable identifier of a data error. Values match
+ * gas-error's error codes, without depending on it.
+ */
+type GasSheetDbErrorCode = 'VALIDATION_ERROR' | 'NOT_FOUND' | 'CONFLICT';
+
 /** A single raw sheet cell value, as returned by Range#getValues(). */
 type GasSheetDbCellValue = string | number | boolean | Date;
 

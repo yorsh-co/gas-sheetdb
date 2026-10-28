@@ -302,7 +302,7 @@ describe('locking', () => {
     table.insert({ name: 'Ann' });
 
     expect(() => table.update({ _id: 'missing' })).toThrow(
-      'Entry not found: missing',
+      '[GasSheetDb] Entry not found: missing',
     );
 
     expect(mocks.isLocked()).toBe(false);
