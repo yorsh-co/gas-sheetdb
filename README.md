@@ -721,6 +721,18 @@ Stored in the sheet as:
 
 Values are automatically decoded when reading rows.
 
+A string that itself starts with `__JSON__` is stored as JSON as well (`__JSON__"__JSON__x"`), so it reads back as the identical string rather than being parsed as an object.
+
+#### Text storage
+
+Strings are always stored as text, exactly as given: `=1+1`, `0012`, `TRUE` and `2024-01-02` are not evaluated or converted, and read back unchanged. Numbers, booleans and `Date`s are stored as native cell values. `gas-sheetdb` never writes formulas; formula columns added in the sheet are preserved (see above).
+
+Nested `Date`s inside objects and arrays are serialized as JSON and read back as ISO strings.
+
+#### Unsupported values
+
+`insert` and `update` throw a `VALIDATION_ERROR` naming the column, with `details` of `{ column, reason }`, before writing anything or changing any passed object, when a value is a `bigint`, `symbol` or `function`, cannot be serialized to JSON, or would exceed the Sheets limit of 50,000 characters per cell (measured on the stored text, including the `__JSON__` prefix of encoded values).
+
 ### Locking
 
 Every write operation runs inside an Apps Script `LockService` lock, and so does creating a missing table sheet. The scope and the time to wait for the lock are configurable per instance, and overridable per table:

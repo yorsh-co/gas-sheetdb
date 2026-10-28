@@ -305,6 +305,7 @@ class _GasSheetDbTable {
     return this._withLock(() => {
       this.schema.reload();
       this._assertUniqueIds(entries);
+      this._assertStorable(entries);
 
       entries.forEach((entry) => this._applyInsertMetadata(entry));
 
@@ -387,6 +388,8 @@ class _GasSheetDbTable {
 
       return rowIndex;
     });
+
+    this._assertStorable(entries.map((entry) => ({ ...entry, ...patch })));
 
     entries.forEach((entry) => {
       Object.assign(entry, patch);
@@ -716,7 +719,11 @@ class _GasSheetDbTable {
           .setValues(
             data
               .slice(start, start + count)
-              .map((row) => row.slice(colStart, colStart + colCount)),
+              .map((row) =>
+                row
+                  .slice(colStart, colStart + colCount)
+                  .map(_GasSheetDbValueCodec.toSheetInput),
+              ),
           );
       }
     }
@@ -770,7 +777,9 @@ class _GasSheetDbTable {
 
     this.sheet
       .getRange(startRow, 1, data.length, data[0].length)
-      .setValues(data);
+      .setValues(
+        data.map((row) => row.map(_GasSheetDbValueCodec.toSheetInput)),
+      );
   }
 
   /**
@@ -845,6 +854,27 @@ class _GasSheetDbTable {
    */
   private _isPersistedField(key: string): boolean {
     return key !== '' && !_GAS_SHEETDB_NON_PERSISTED_FIELDS.has(key);
+  }
+
+  /**
+   * Throw a validation error when a persisted field of any entry holds a
+   * value that cannot be stored. Runs before anything is written or changed.
+   */
+  private _assertStorable(entries: GasSheetDbEntry[]): void {
+    for (const entry of entries) {
+      for (const [column, value] of Object.entries(entry)) {
+        if (value === undefined || !this._isPersistedField(column)) continue;
+
+        const reason = _GasSheetDbValueCodec.unsupportedReason(value);
+
+        if (reason) {
+          throw _GasSheetDbErrors.validation(
+            `[GasSheetDb] Cannot store column "${column}": ${reason}`,
+            { column, reason },
+          );
+        }
+      }
+    }
   }
 
   /**

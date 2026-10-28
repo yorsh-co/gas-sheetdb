@@ -103,7 +103,7 @@ class _GasSheetDbTableSchema {
         1,
         newColumnKeys.length,
       )
-      .setValues([newColumnKeys]);
+      .setValues([newColumnKeys.map(_GasSheetDbValueCodec.toSheetInput)]);
 
     this.columnKeys.push(...newColumnKeys);
 
