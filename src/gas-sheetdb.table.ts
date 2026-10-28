@@ -84,9 +84,9 @@ class _GasSheetDbTable {
 
       const defaultSheetName = 'gsd-table-{i}';
 
-      const i = 0;
+      let i = 0;
       do {
-        newSheetName = defaultSheetName.replace('{i}', String(i));
+        newSheetName = defaultSheetName.replace('{i}', String(i++));
       } while (allSheetNames.includes(newSheetName));
     }
 
@@ -450,10 +450,12 @@ class _GasSheetDbTable {
       entriesRowIndexes.push(rowIndex);
     }
 
-    // sort in reverse order to delete from the bottom up
-    entriesRowIndexes.sort((a, b) => b - a);
+    // sort in reverse order to delete from the bottom up, once per row
+    const uniqueRowIndexes = [...new Set(entriesRowIndexes)].sort(
+      (a, b) => b - a,
+    );
 
-    entriesRowIndexes.forEach((rowIndex) => data.splice(rowIndex, 1));
+    uniqueRowIndexes.forEach((rowIndex) => data.splice(rowIndex, 1));
 
     this._setTableBodyData(data);
   }
@@ -506,10 +508,24 @@ class _GasSheetDbTable {
    * Write to the entire table body on the sheet.
    */
   private _setTableBodyData(data: GasSheetDbCellValue[][] = []): void {
-    // deleting every entry leaves nothing to write, but the orphaned rows
-    // still have to come off the sheet
+    // deleting every entry leaves nothing to write: clear the old body and
+    // keep its first row, as Sheets refuses to delete all non-frozen rows
     if (!data.length) {
-      this._removeExtraRows(0);
+      const firstDataRow = this.rowNumbers.firstData;
+      const lastRow = this.sheet.getLastRow();
+
+      if (lastRow >= firstDataRow) {
+        this.sheet
+          .getRange(
+            firstDataRow,
+            1,
+            lastRow - firstDataRow + 1,
+            this.sheet.getMaxColumns(),
+          )
+          .clearContent();
+      }
+
+      this._removeExtraRows(1);
       return;
     }
 
