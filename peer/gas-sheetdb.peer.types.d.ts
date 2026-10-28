@@ -60,11 +60,16 @@ declare class GasSheetDbError extends Error {
 }
 
 /**
- * Minimal lock-service shape gas-sheetdb needs to guard its writes.
- * GasLock (github.com/yorsh-co/gas-lock) satisfies this directly — pass
- * it in to get reentrancy-safe nesting with your own LockService calls.
- * Omit it and gas-sheetdb falls back to acquiring Apps Script's
- * LockService directly, with no reentrancy protection.
+ * Minimal lock-service shape gas-sheetdb needs to guard its reads and
+ * writes. GasLock (github.com/yorsh-co/gas-lock) satisfies this directly and
+ * is used automatically when loaded.
+ *
+ * Apps Script locks are owned per execution, not per handle: acquiring a
+ * scope the execution already holds succeeds at once, and `releaseLock()` on
+ * any handle releases the execution's lock. A service must therefore track
+ * what the execution holds, as GasLock does, so a nested acquire never ends
+ * the outer critical section early. Without GasLock, gas-sheetdb falls back
+ * to acquiring Apps Script's LockService directly, with no such tracking.
  */
 interface GasSheetDbLockService {
   withLock<T>(
@@ -85,6 +90,10 @@ interface GasSheetDbLockService {
  * recover from is thrown rather than logged, so there is nothing to report
  * at `error`.
  *
+ * Calls are made after gas-sheetdb has released its lock, so a sheet-backed
+ * logger may take its own lock and write without nesting inside it. A logger
+ * that throws is reported through `console` and never fails an operation.
+ *
  * Flushing a buffered logger is the caller's responsibility — gas-sheetdb
  * owns no execution boundary to flush on.
  */
@@ -102,7 +111,9 @@ interface GasSheetDbOptions {
   rowNumbers?: Partial<GasSheetDbRowsReference>;
   /** @default 'script' */
   lockScope?: GasSheetDbLockScope;
-  /** @default an internal fallback calling LockService directly, with no reentrancy protection */
+  /** @default 30000 */
+  lockTimeoutMs?: number;
+  /** @default the `GasLock` global when loaded, else an internal fallback calling LockService directly */
   lockService?: GasSheetDbLockService;
   /** @default an internal fallback writing to the execution log via console */
   logger?: GasSheetDbLogger;
@@ -114,6 +125,8 @@ interface GasSheetDbTableOptions {
   rowNumbers?: Partial<GasSheetDbRowsReference>;
   /** Overrides the parent `GasSheetDb` instance's lockScope for this table only. */
   lockScope?: GasSheetDbLockScope;
+  /** Overrides the parent `GasSheetDb` instance's lockTimeoutMs for this table only. */
+  lockTimeoutMs?: number;
   /** Overrides the parent `GasSheetDb` instance's logger for this table only. */
   logger?: GasSheetDbLogger;
 }
@@ -186,6 +199,7 @@ declare class _GasSheetDbTable {
   schema: _GasSheetDbTableSchema;
   lockScope: GasSheetDbLockScope;
   lockService: GasSheetDbLockService;
+  lockTimeoutMs: number;
   logger: GasSheetDbLogger;
 
   /**
@@ -330,11 +344,13 @@ declare class GasSheetDb {
   rowNumbers: GasSheetDbRowsReference;
   lockScope: GasSheetDbLockScope;
   lockService: GasSheetDbLockService;
+  lockTimeoutMs: number;
   logger: GasSheetDbLogger;
 
   /**
    * Create a table wrapper for a sheet. The sheet is created if it does not
-   * exist. `lockScope` and `logger` fall back to this instance's values.
+   * exist. `lockScope`, `lockTimeoutMs` and `logger` fall back to this
+   * instance's values.
    */
   table(options?: GasSheetDbTableOptions): _GasSheetDbTable;
 }

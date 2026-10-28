@@ -29,8 +29,9 @@ Entries can be queried and updated through a `GasSheetDb` instance using ORM-lik
 - Objects and arrays are JSON serialized
 - Accepts new entries inserted manually to the spreadsheet
 - Supports both bound and standalone spreadsheets
-- Uses Apps Script `LockService` for safer concurrent writes, with a configurable lock scope per instance or per table (full transactions are not yet supported)
-- Optionally accepts an injected lock service ([`gas-lock`](https://github.com/yorsh-co/gas-lock)) so nested locks across multiple services in one execution reuse a single lock instead of deadlocking
+- Uses Apps Script `LockService` for safer concurrent writes, with a configurable lock scope and timeout per instance or per table (full transactions are not yet supported)
+- Reads take no lock when the sheet needs no repair
+- Uses [`gas-lock`](https://github.com/yorsh-co/gas-lock) automatically when it is loaded, or accepts an injected lock service, so nested locks across multiple services in one execution do not end each other early
 - Written in TypeScript with generated JavaScript distribution
 - Optionally accepts an injected logger ([`gas-logger`](https://github.com/yorsh-co/gas-logger), `console`, or any `info`/`warn` sink) to route schema and metadata events through your own levels, bindings and sheet sink
 - No external dependencies beyond built-in Apps Script services
@@ -201,7 +202,8 @@ const sheetDb = new GasSheetDb({
   useActiveSpreadsheet: true, // or spreadsheet / spreadsheetUrl / spreadsheetId
   rowNumbers: { columnKeys: 2, firstData: 3 }, // optionally, set your own row configuration. Defaults to `{ columnKeys: 1, firstData: 2 }`
   lockScope: 'script', // optionally, set the lock scope for writes. Defaults to `'script'`
-  lockService: GasLock, // optionally, configure the instance to use `gas-lock` in the place of the default LockService
+  lockTimeoutMs: 30000, // optionally, set how long to wait for the lock. Defaults to `30000`
+  lockService: GasLock, // optionally, inject a lock service. Defaults to `GasLock` when loaded, else `LockService` directly
 });
 ```
 
@@ -212,6 +214,7 @@ const myTable = sheetDb.table({
   sheetName: 'My Table',
   rowNumbers: { columnKeys: 3, firstData: 4 }, // optionally, set a table-specific row configuration that takes precedence over the `sheetDb` row configuration
   lockScope: 'user', // optionally, override the instance lock scope for this table
+  lockTimeoutMs: 5000, // optionally, override the instance lock timeout for this table
 });
 ```
 
@@ -310,6 +313,7 @@ const sheetDb = new GasSheetDb({
   useActiveSpreadsheet: true, // or spreadsheet / spreadsheetUrl / spreadsheetId
   rowNumbers: { columnKeys: 2, firstData: 3 }, // optionally, set your own row configuration. Defaults to `{ columnKeys: 1, firstData: 2 }`
   lockScope: 'script', // optionally, set the lock scope for writes. Defaults to `'script'`
+  lockTimeoutMs: 30000, // optionally, set how long to wait for the lock. Defaults to `30000`
 });
 ```
 
@@ -710,19 +714,25 @@ Values are automatically decoded when reading rows.
 
 ### Locking
 
-Every write operation runs inside an Apps Script `LockService` lock. The scope is configurable per instance, and overridable per table:
+Every write operation runs inside an Apps Script `LockService` lock, and so does creating a missing table sheet. The scope and the time to wait for the lock are configurable per instance, and overridable per table:
 
 ```js
 const sheetDb = new GasSheetDb({
   useActiveSpreadsheet: true,
   lockScope: 'script', // default
+  lockTimeoutMs: 30000, // default
 });
 
 const auditTable = sheetDb.table({
   sheetName: 'Audit',
   lockScope: 'user', // per-user writes, no cross-user blocking
+  lockTimeoutMs: 5000, // fail fast when the lock is busy
 });
 ```
+
+`lockTimeoutMs` must be a positive, finite number of milliseconds. When the lock cannot be acquired in time, the operation throws.
+
+Reads (`find`, `findWhere`, `findOneWhere`, `findTrashed`) take no lock when the sheet needs no repair. If the system columns are missing or a row lacks its `_id`, `_createdAt`, `_updatedAt` or `_isDeleted`, the read takes the lock, repairs the sheet and reads again under it. Reads never delete rows. The predicate-based writers (`updateWhere`, `updateOneWhere`, `softDeleteWhere`, `deleteWhere`) read under their own lock.
 
 | Scope                | Serializes across                              | Notes                                                                                                                                                      |
 | -------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -731,20 +741,24 @@ const auditTable = sheetDb.table({
 | `user`               | The current user's own concurrent executions   | Does not protect against concurrent writes by different users.                                                                                             |
 
 > [!NOTE]
-> Prior to `2.0.0`, `gas-sheetdb` always used a document lock. Because that scope silently provides no lock at all in a web app execution, the default is now `script`. Set `lockScope: 'document'` explicitly to restore the old behavior.
+> Prior to `1.2.0`, `gas-sheetdb` always used a document lock. Because that scope silently provides no lock at all in a web app execution, the default is now `script`. Set `lockScope: 'document'` explicitly to restore the old behavior.
 
-#### Injecting a lock service
+#### The lock service
 
-`LockService` locks aren't reentrant: if your own code holds a lock and then calls a `gas-sheetdb` write that acquires the same scope, the inner acquire blocks until timeout — nothing in a single-threaded execution can release the outer lock while it waits.
+Apps Script locks are owned per execution, not per handle. Acquiring a scope the execution already holds succeeds immediately — nested acquires do not deadlock — but `releaseLock()` on **any** handle releases the execution's lock, ending the outer critical section early while its code keeps running unprotected.
+
+`gas-sheetdb` therefore uses [`gas-lock`](https://github.com/yorsh-co/gas-lock) whenever the `GasLock` global exists. It tracks which scopes the execution holds, so a nested `withLock` joins the outer lock instead of releasing it. The global is looked up at each acquisition, so load order does not matter.
 
 ```js
-// Deadlocks — the insert() blocks on a 'script' lock this callback holds.
+// With GasLock loaded, no configuration is needed: the insert() joins the
+// outer lock and leaves it held.
 GasLock.withLock('script', () => {
   reportsTable.insert(entry);
+  auditTable.insert(auditEntry); // still protected
 });
 ```
 
-Pass [`gas-lock`](https://github.com/yorsh-co/gas-lock) as `lockService` to fix this. It tracks which scopes the current execution already holds, so nested acquires reuse the outer lock rather than waiting on it:
+Without `GasLock`, `gas-sheetdb` falls back to acquiring `LockService` directly, with no ownership tracking. The same code is then unsafe: the `insert()` releases the lock the outer callback holds, so `auditTable.insert()` runs unprotected. Mixing the two is unsafe as well: if the outer lock is a `GasLock` one but `gas-sheetdb` was given a raw `lockService`, the inner release drops the lock and `GasLock` then throws its lost-lock error after the write. Load `GasLock` so both sides use it, or pass it explicitly:
 
 ```js
 const sheetDb = new GasSheetDb({
@@ -753,7 +767,7 @@ const sheetDb = new GasSheetDb({
 });
 ```
 
-Omit `lockService` and `gas-sheetdb` acquires `LockService` locks directly, with no reentrancy protection — the standalone default, and unchanged behavior for existing callers.
+`lockService` accepts any object exposing `withLock(scope, callback, { timeoutMs })`. An object without it — typically Apps Script's own `LockService` global passed in place of `GasLock` — is rejected when the instance is created.
 
 ### Logging
 
@@ -811,7 +825,7 @@ Use it to send one sensitive table's events to their own sheet, or to bind per-t
 > **Flushing is yours to do.** `gas-sheetdb` never calls `flush()` — it has no request or execution boundary to flush on. If your logger buffers (`flushThreshold`), flush it yourself in a `finally` block, or list the levels you can't afford to lose under `bypassBufferLevels`.
 
 > [!IMPORTANT]
-> A sheet-backed logger writes to the spreadsheet **from inside the `gas-sheetdb` write lock** — `Added columns`, `Backfilled system metadata` and decode warnings all occur mid-operation. Each unbuffered line is a `SpreadsheetApp` round-trip that other executions wait on. Set `flushThreshold` so those writes batch outside the hot path, or keep `sheetLevel` at `warn`.
+> `gas-sheetdb` never calls the logger while holding its lock. Lines raised mid-operation — `Added columns`, `Backfilled system metadata`, decode warnings, `Created table sheet` — are queued and emitted, in order, once the lock is released, even when the operation throws. A sheet-backed logger such as `gas-logger` takes the script lock itself, and its release would otherwise end the `gas-sheetdb` critical section early. A logger that throws never fails or masks the operation: the failure is reported through `console` and the remaining lines are still emitted.
 
 ### Errors
 
@@ -834,7 +848,7 @@ try {
 ```
 
 > [!NOTE]
-> Configuration and programmer errors (invalid `lockScope` or `logger`, conflicting spreadsheet options, no active spreadsheet) are plain `Error`s, so they are reported as unexpected. Every message starts with `[GasSheetDb]`.
+> Configuration and programmer errors (invalid `lockScope`, `lockTimeoutMs`, `lockService` or `logger`, conflicting spreadsheet options, no active spreadsheet) are plain `Error`s, so they are reported as unexpected. Every message starts with `[GasSheetDb]`.
 
 ### Entry Point
 
@@ -852,7 +866,8 @@ new GasSheetDb({
   useActiveSpreadsheet,
   rowNumbers, // optional instance-wide default
   lockScope, // optional, 'script' | 'document' | 'user'. Defaults to 'script'
-  lockService, // optional, e.g. GasLock. Defaults to LockService directly
+  lockTimeoutMs, // optional, milliseconds to wait for the lock. Defaults to 30000
+  lockService, // optional, e.g. GasLock. Defaults to GasLock when loaded, else LockService directly
   logger, // optional, e.g. GasLogger. Defaults to the execution log via console
 });
 ```
@@ -862,7 +877,7 @@ The resolved spreadsheet is available as sheetDb.spreadsheet.
 ##### Methods
 
 ```js
-GasSheetDb(...).table({ sheetName, rowNumbers, lockScope, logger });
+GasSheetDb(...).table({ sheetName, rowNumbers, lockScope, lockTimeoutMs, logger });
 ```
 
 #### Table instance returned by GasSheetDb.table(...)

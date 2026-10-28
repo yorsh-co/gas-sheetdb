@@ -13,7 +13,24 @@ class _GasSheetDbTable {
   schema: _GasSheetDbTableSchema;
   lockScope: GasSheetDbLockScope;
   lockService: GasSheetDbLockService;
+  lockTimeoutMs: number;
   logger: GasSheetDbLogger;
+
+  /**
+   * Log lines queued while the lock is held, or null outside `_withLock`.
+   * See `_withLock` for why nothing is logged under the lock.
+   */
+  private _deferredLogs: _GasSheetDbDeferredLog[] | null = null;
+
+  /**
+   * The logger this table and its schema log through: it queues lines while
+   * the lock is held and forwards them to `logger` once it is released.
+   * Keeps the schema unaware of locking.
+   */
+  private readonly _logSink: GasSheetDbLogger = {
+    info: (msg, meta) => this._log({ level: 'info', msg, meta }),
+    warn: (msg, meta) => this._log({ level: 'warn', msg, meta }),
+  };
 
   constructor({
     spreadsheet,
@@ -21,21 +38,24 @@ class _GasSheetDbTable {
     rowNumbers,
     lockScope,
     lockService,
+    lockTimeoutMs,
     logger,
   }: GasSheetDbTableConstructorOptions) {
     this.spreadsheet = spreadsheet;
     this.sheetName = sheetName;
     this.rowNumbers = rowNumbers; // Base-1 row numbers
     this.rowIndexes = this._deriveRowIndexes(); // Base-0 row indexes
-    this.logger = logger; // assigned before _ensureSheet(), which logs
+    // assigned before _ensureSheet(), which locks and logs
+    this.lockScope = lockScope;
+    this.lockService = lockService;
+    this.lockTimeoutMs = lockTimeoutMs;
+    this.logger = logger;
     this.sheet = this._ensureSheet();
     this.schema = new _GasSheetDbTableSchema(
       this.sheet,
       this.rowNumbers,
-      this.logger,
+      this._logSink,
     );
-    this.lockScope = lockScope;
-    this.lockService = lockService;
   }
 
   // =========================
@@ -57,7 +77,9 @@ class _GasSheetDbTable {
 
   /**
    * Ensure the sheet exists, by returning the existing
-   * sheet, or inserting a new one.
+   * sheet, or inserting a new one under the lock. The lookup is repeated
+   * once the lock is held, as another execution may have created the sheet
+   * in the meantime.
    */
   private _ensureSheet(): GoogleAppsScript.Spreadsheet.Sheet {
     if (this.sheetName) {
@@ -66,7 +88,11 @@ class _GasSheetDbTable {
       if (sheet) return sheet;
     }
 
-    return this._insertSheet();
+    return this._withLock(
+      () =>
+        (this.sheetName && this.spreadsheet.getSheetByName(this.sheetName)) ||
+        this._insertSheet(),
+    );
   }
 
   /**
@@ -106,7 +132,7 @@ class _GasSheetDbTable {
 
     newSheet.setFrozenRows(this.rowNumbers.columnKeys);
 
-    this.logger.info('Created table sheet', { sheet: newSheetName });
+    this._logSink.info('Created table sheet', { sheet: newSheetName });
 
     return newSheet;
   }
@@ -118,9 +144,48 @@ class _GasSheetDbTable {
   /**
    * Read all rows as objects.
    * Adds runtime metadata to each entry.
+   *
+   * Reads without the lock unless the system columns or any row's metadata
+   * need repairing, in which case the repair and the read run under it.
    */
   find(options: GasSheetDbFindOptions = {}): GasSheetDbEntry[] {
-    return this._withLock(() => this._findUnlocked(options));
+    return (
+      this._findWithoutLock(options) ??
+      this._withLock(() => this._findUnlocked(options))
+    );
+  }
+
+  /**
+   * Read all rows as objects without acquiring the lock, or return null when
+   * the sheet needs repairing first (see `_ensureRequiredMetadata`).
+   *
+   * Header and body come from a single `getDataRange()` read, so they are
+   * consistent with each other even while another execution writes. Nothing
+   * is flushed: a read already observes this execution's own writes, and
+   * there is nothing of ours to publish.
+   */
+  private _findWithoutLock(
+    options: GasSheetDbFindOptions,
+  ): GasSheetDbEntry[] | null {
+    const data = this.sheet.getDataRange().getValues();
+    const columnKeys = (data[this.rowIndexes.columnKeys] ?? []) as string[];
+
+    this.schema.columnKeys = columnKeys;
+
+    if (
+      Object.values(_GAS_SHEETDB_SYSTEM_FIELDS).some(
+        (key) => !columnKeys.includes(key),
+      )
+    ) {
+      return null;
+    }
+
+    const body = data.slice(this.rowIndexes.firstData);
+    const columns = this._getSystemColumnIndexes();
+
+    if (body.some((row) => this._rowNeedsBackfill(row, columns))) return null;
+
+    return this._selectEntries(body, options);
   }
 
   /**
@@ -133,11 +198,19 @@ class _GasSheetDbTable {
   private _findUnlocked(
     options: GasSheetDbFindOptions = {},
   ): GasSheetDbEntry[] {
-    const { withTrashed = false, onlyTrashed = false } = options;
-
     this._ensureRequiredMetadata();
 
-    const data = this._getTableBodyData();
+    return this._selectEntries(this._getTableBodyData(), options);
+  }
+
+  /**
+   * Decode the rows matching the trashed filters of `options`.
+   */
+  private _selectEntries(
+    data: GasSheetDbCellValue[][],
+    options: GasSheetDbFindOptions,
+  ): GasSheetDbEntry[] {
+    const { withTrashed = false, onlyTrashed = false } = options;
 
     const isTrashedColIndex = this._getColumnIndex(
       _GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED,
@@ -719,7 +792,7 @@ class _GasSheetDbTable {
     const entries = rows.map((row) => this._decodeRow(row, onDecodeError));
 
     if (failedCells) {
-      this.logger.warn('Failed to decode JSON cells', {
+      this._logSink.warn('Failed to decode JSON cells', {
         sheet: this.sheetName,
         cells: failedCells,
         error: (firstError as Error)?.message ?? String(firstError),
@@ -763,16 +836,13 @@ class _GasSheetDbTable {
 
     if (!data.length) return;
 
-    const idColIndex = this._getColumnIndex(_GAS_SHEETDB_SYSTEM_FIELDS.ID);
-    const createdAtColIndex = this._getColumnIndex(
-      _GAS_SHEETDB_SYSTEM_FIELDS.CREATED_AT,
-    );
-    const updatedAtColIndex = this._getColumnIndex(
-      _GAS_SHEETDB_SYSTEM_FIELDS.UPDATED_AT,
-    );
-    const isTrashedColIndex = this._getColumnIndex(
-      _GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED,
-    );
+    const columns = this._getSystemColumnIndexes();
+    const {
+      id: idColIndex,
+      createdAt: createdAtColIndex,
+      updatedAt: updatedAtColIndex,
+      isDeleted: isTrashedColIndex,
+    } = columns;
 
     const now = new Date();
 
@@ -782,39 +852,23 @@ class _GasSheetDbTable {
     let backfilledRows = 0;
 
     for (const row of data) {
-      let backfilled = false;
+      if (!this._rowNeedsBackfill(row, columns)) continue;
 
-      if (!row[idColIndex]) {
-        row[idColIndex] = this._generateId();
-        backfilled = true;
-      }
-
-      if (!row[createdAtColIndex]) {
-        row[createdAtColIndex] = now;
-        backfilled = true;
-      }
-
-      if (!row[updatedAtColIndex]) {
-        row[updatedAtColIndex] = now;
-        backfilled = true;
-      }
-
+      if (!row[idColIndex]) row[idColIndex] = this._generateId();
+      if (!row[createdAtColIndex]) row[createdAtColIndex] = now;
+      if (!row[updatedAtColIndex]) row[updatedAtColIndex] = now;
       if (typeof row[isTrashedColIndex] !== 'boolean') {
         row[isTrashedColIndex] = false;
-        backfilled = true;
       }
 
-      if (backfilled) backfilledRows++;
+      backfilledRows++;
     }
 
-    if (!backfilledRows) {
-      this._removeExtraRows(data.length);
-      return;
-    }
+    if (!backfilledRows) return;
 
     this._setTableBodyData(data);
 
-    this.logger.info('Backfilled system metadata', {
+    this._logSink.info('Backfilled system metadata', {
       sheet: this.sheetName,
       rows: backfilledRows,
     });
@@ -823,6 +877,35 @@ class _GasSheetDbTable {
   // =========================
   // METADATA HELPERS
   // =========================
+
+  /**
+   * Return the base-0 column indexes of the system fields, -1 for any that
+   * is not on the sheet.
+   */
+  private _getSystemColumnIndexes(): _GasSheetDbSystemColumnIndexes {
+    return {
+      id: this._getColumnIndex(_GAS_SHEETDB_SYSTEM_FIELDS.ID),
+      createdAt: this._getColumnIndex(_GAS_SHEETDB_SYSTEM_FIELDS.CREATED_AT),
+      updatedAt: this._getColumnIndex(_GAS_SHEETDB_SYSTEM_FIELDS.UPDATED_AT),
+      isDeleted: this._getColumnIndex(_GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED),
+    };
+  }
+
+  /**
+   * Whether a row lacks any system metadata that
+   * `_ensureRequiredMetadata` would backfill.
+   */
+  private _rowNeedsBackfill(
+    row: GasSheetDbCellValue[],
+    columns: _GasSheetDbSystemColumnIndexes,
+  ): boolean {
+    return (
+      !row[columns.id] ||
+      !row[columns.createdAt] ||
+      !row[columns.updatedAt] ||
+      typeof row[columns.isDeleted] !== 'boolean'
+    );
+  }
 
   /**
    * Apply system fields for new entries.
@@ -868,25 +951,67 @@ class _GasSheetDbTable {
 
   /**
    * Execute a callback inside this table's configured lock, via whichever
-   * lockService was injected (or the minimal default fallback).
+   * lockService was injected (or the default: GasLock when loaded, else the
+   * minimal fallback), waiting up to `lockTimeoutMs` for it.
    *
    * The flush runs inside the lock, resyncing Apps Script's
    * local spreadsheet model.
    *
    * Public methods acquire the lock exactly once and must never call one
-   * another: the default lockService is non-reentrant, so a nested call
-   * blocks on a lock this execution already holds until it times out.
-   * Methods that need to read and then write within one lock compose the
-   * private `_*Unlocked` cores instead.
+   * another. Apps Script locks are owned per execution, so a nested acquire
+   * succeeds at once, but with the default lockService its release then
+   * ends the outer critical section early, leaving the rest of the outer
+   * method unprotected. Methods that need to read and then write within one
+   * lock compose the private `_*Unlocked` cores instead.
+   *
+   * Log lines raised by the callback are queued and emitted once the lock is
+   * released, in order, whether or not it threw. A sheet-backed logger takes
+   * the script lock itself, and its release would end this critical section
+   * early.
    */
   private _withLock<T>(callback: () => T): T {
-    return this.lockService.withLock(this.lockScope, () => {
-      SpreadsheetApp.flush();
+    const logs: _GasSheetDbDeferredLog[] = [];
+    this._deferredLogs = logs;
 
-      const response = callback();
+    try {
+      return this.lockService.withLock(
+        this.lockScope,
+        () => {
+          SpreadsheetApp.flush();
 
-      SpreadsheetApp.flush();
-      return response;
-    });
+          const response = callback();
+
+          SpreadsheetApp.flush();
+          return response;
+        },
+        { timeoutMs: this.lockTimeoutMs },
+      );
+    } finally {
+      this._deferredLogs = null;
+      logs.forEach((log) => this._emit(log));
+    }
+  }
+
+  /**
+   * Queue a log line while the lock is held, else emit it at once.
+   */
+  private _log(log: _GasSheetDbDeferredLog): void {
+    if (this._deferredLogs) this._deferredLogs.push(log);
+    else this._emit(log);
+  }
+
+  /**
+   * Forward a log line to the logger. A throwing logger never fails the
+   * operation, which has already run, nor masks its error: the failure is
+   * reported through `console` and the remaining lines are still emitted.
+   */
+  private _emit({ level, msg, meta }: _GasSheetDbDeferredLog): void {
+    try {
+      this.logger[level](msg, meta);
+    } catch (error) {
+      console.error(`[GasSheetDb] Logger failed to record "${msg}"`, {
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
   }
 }

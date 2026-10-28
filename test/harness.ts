@@ -3,7 +3,7 @@ import { createGasLoader } from 'gas-dev-config/test';
 import { createMocks, type MockOptions, type Mocks } from './mocks';
 
 /** Source files in load order; later files depend on earlier ones. */
-const SOURCE_FILES = [
+export const SOURCE_FILES = [
   'gas-sheetdb.types.ts',
   'gas-sheetdb.errors.ts',
   'gas-sheetdb.constants.ts',
@@ -13,10 +13,13 @@ const SOURCE_FILES = [
   'gas-sheetdb.class.ts',
 ];
 
+/** Repository root, against which `SOURCE_FILES` resolve. */
+export const ROOT = fileURLToPath(new URL('..', import.meta.url));
+
 const load = createGasLoader<{ GasSheetDb: typeof GasSheetDb }>({
   files: SOURCE_FILES.map((file) => `src/${file}`),
   exports: ['GasSheetDb'],
-  root: fileURLToPath(new URL('..', import.meta.url)),
+  root: ROOT,
 });
 
 /**

@@ -6,6 +6,9 @@
 
 ### Changed
 
+- **BREAKING:** `find()`, `findWhere()`, `findOneWhere()` and `findTrashed()` no longer take the lock when the sheet needs no repair, and no longer delete trailing blank rows. A read takes the lock only to add missing system columns or backfill rows, then repairs and reads again under it. Code that relied on a read serializing with writers, or on a read trimming the sheet, must be updated
+- **BREAKING:** when no `lockService` is injected, the `GasLock` global is used if it is loaded, otherwise the minimal `LockService` fallback as before. It is looked up at each acquisition, so file load order does not matter. `lockService` on the instance and on tables is never `undefined`: it is the default service, which resolves `GasLock` itself
+- A table sheet that does not exist is now created under the lock, so `table()` can block, or throw when the lock cannot be acquired
 - **BREAKING:** every error message now carries the `[GasSheetDb]` prefix (`Empty data`, `Cannot map rows by "_id"`, `Entry not found`, `Cannot update entry without "_id"`), and deleting an entry without an `_id` now says `Cannot delete` rather than `Cannot update`. Code that matches on message text must be updated; match on `code` instead
 - Lint, TypeScript and Prettier configuration and the test loader come from [`gas-dev-config`](https://github.com/yorsh-co/gas-dev-config)
 - Dependabot groups development dependencies into one weekly pull request
@@ -13,8 +16,21 @@
 
 ### Added
 
+- `lockTimeoutMs` option on `GasSheetDb` and `table()` (default `30000`; a table overrides the instance), passed to every `lockService.withLock` call. It must be a positive, finite number
+- Automatic use of [`gas-lock`](https://github.com/yorsh-co/gas-lock) when its `GasLock` global is loaded, with no `lockService` option needed
 - Typed data errors: a missing `_id` throws a 400 `VALIDATION_ERROR` and an unknown `_id` a 404 `NOT_FOUND`. When [`gas-error`](https://github.com/yorsh-co/gas-error) is loaded they are its `GasValidationError` and `GasNotFoundError`, so `GasError.handle` reports them correctly; otherwise they are a `GasSheetDbError` with the same `statusCode`, `code`, `details` and `isOperational` fields. Both are still `instanceof Error`. Configuration errors remain plain `Error`s
 - Vitest test suite with in-memory Apps Script service mocks that model Sheets' value coercion, grid bounds and frozen-row rules
+
+### Fixed
+
+- Log lines are no longer emitted while the lock is held. `Created table sheet`, `Added columns`, `Backfilled system metadata` and `Failed to decode JSON cells` are queued and emitted in order once the lock is released, also when the operation throws. A sheet-backed logger such as `gas-logger` takes the script lock itself, and its release ended the `gas-sheetdb` critical section early. A logger that throws no longer fails or masks the operation; the failure is reported through `console`
+- Creating a table sheet no longer throws `A sheet with the name ... already exists` when another execution creates it between the lookup and the insert: the lookup is repeated under the lock
+- An invalid `lockService`, such as Apps Script's `LockService` global passed instead of `GasLock`, is rejected when the instance is created instead of failing on the first write
+
+### Docs
+
+- Corrected the description of `LockService` semantics. Locks are owned per execution: a nested acquire succeeds immediately and does not deadlock, but releasing any handle ends the outer critical section early. The README's deadlock example, and the note that the document-lock default was dropped in `2.0.0` (it shipped in `1.2.0`), are fixed
+- The Logging section no longer advises buffering to keep log writes outside the hot path, as logs are emitted after the lock is released
 
 ---
 

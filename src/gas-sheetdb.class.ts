@@ -12,6 +12,7 @@ class GasSheetDb {
   rowNumbers: GasSheetDbRowsReference;
   lockScope: GasSheetDbLockScope;
   lockService: GasSheetDbLockService;
+  lockTimeoutMs: number;
   logger: GasSheetDbLogger;
 
   constructor(options: GasSheetDbOptions = {}) {
@@ -23,7 +24,8 @@ class GasSheetDb {
     };
 
     this.lockScope = this._resolveLockScope(options.lockScope);
-    this.lockService = options.lockService ?? _GAS_SHEETDB_DEFAULT_LOCK_SERVICE;
+    this.lockService = this._resolveLockService(options.lockService);
+    this.lockTimeoutMs = this._resolveLockTimeoutMs(options.lockTimeoutMs);
     this.logger = this._resolveLogger(options.logger);
   }
 
@@ -92,6 +94,45 @@ class GasSheetDb {
   }
 
   /**
+   * Validate a lockService, falling back to the library default when omitted.
+   */
+  private _resolveLockService(
+    lockService?: GasSheetDbLockService,
+  ): GasSheetDbLockService {
+    if (lockService === undefined) return _GAS_SHEETDB_DEFAULT_LOCK_SERVICE;
+
+    if (!lockService || typeof lockService.withLock !== 'function') {
+      throw new Error(
+        '[GasSheetDb] Invalid "lockService": expected an object exposing withLock(scope, callback, options?) — e.g. GasLock. Passing the LockService global from Apps Script rather than GasLock (or a withLock wrapper) is the usual cause.',
+      );
+    }
+
+    return lockService;
+  }
+
+  /**
+   * Validate a lock timeout in milliseconds, falling back to the library
+   * default when omitted. Shared by the constructor and table(), so both
+   * reject bad input alike.
+   */
+  private _resolveLockTimeoutMs(lockTimeoutMs?: number): number {
+    if (lockTimeoutMs === undefined)
+      return _GAS_SHEETDB_DEFAULT_LOCK_TIMEOUT_MS;
+
+    if (
+      typeof lockTimeoutMs !== 'number' ||
+      !Number.isFinite(lockTimeoutMs) ||
+      lockTimeoutMs <= 0
+    ) {
+      throw new Error(
+        `[GasSheetDb] Invalid "lockTimeoutMs": ${String(lockTimeoutMs)}. Expected a positive, finite number of milliseconds.`,
+      );
+    }
+
+    return lockTimeoutMs;
+  }
+
+  /**
    * Validate a logger, falling back to the library default when omitted.
    * Shared by the constructor and table(), so both reject bad input alike.
    */
@@ -115,7 +156,13 @@ class GasSheetDb {
    * Create a table wrapper for a sheet.
    */
   table(options: GasSheetDbTableOptions = {}): _GasSheetDbTable {
-    const { sheetName = null, rowNumbers = {}, lockScope, logger } = options;
+    const {
+      sheetName = null,
+      rowNumbers = {},
+      lockScope,
+      lockTimeoutMs,
+      logger,
+    } = options;
 
     return new _GasSheetDbTable({
       spreadsheet: this.spreadsheet,
@@ -129,6 +176,10 @@ class GasSheetDb {
           ? this.lockScope
           : this._resolveLockScope(lockScope),
       lockService: this.lockService,
+      lockTimeoutMs:
+        lockTimeoutMs === undefined
+          ? this.lockTimeoutMs
+          : this._resolveLockTimeoutMs(lockTimeoutMs),
       logger: logger === undefined ? this.logger : this._resolveLogger(logger),
     });
   }

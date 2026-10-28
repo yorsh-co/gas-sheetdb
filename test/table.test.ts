@@ -7,7 +7,9 @@ import {
   header,
   rows,
   setup,
+  setupProbed,
   setupTable,
+  sheetOf,
 } from './helpers';
 
 const SYSTEM_COLUMNS = ['_id', '_createdAt', '_updatedAt', '_isDeleted'];
@@ -492,5 +494,268 @@ describe('delete', () => {
     expect(() => table.deleteMany([{ _id: 'nope' }])).toThrow(
       '[GasSheetDb] Entry not found: nope',
     );
+  });
+});
+
+describe('read path', () => {
+  /** Counts of the sheet mutations a read must not perform. */
+  const mutations = (sheet: ReturnType<typeof setupTable>['sheet']) => ({
+    setValues: sheet.calls.setValues.length,
+    clearContent: sheet.calls.clearContent.length,
+    deleteRows: sheet.deleteRows.mock.calls.length,
+    insertRows: sheet.insertRowsAfter.mock.calls.length,
+    insertColumns: sheet.insertColumnsAfter.mock.calls.length,
+  });
+
+  it.each([
+    ['find', (t: ReturnType<typeof seeded>['table']) => t.find()],
+    [
+      'findWhere',
+      (t: ReturnType<typeof seeded>['table']) => t.findWhere(() => true),
+    ],
+    [
+      'findOneWhere',
+      (t: ReturnType<typeof seeded>['table']) => t.findOneWhere(() => true),
+    ],
+    ['findTrashed', (t: ReturnType<typeof seeded>['table']) => t.findTrashed()],
+  ])(
+    '%s of a healthy table takes no lock and writes nothing',
+    (_name, read) => {
+      const { lockService, withLock } = createLockService();
+      const { table, sheet, mocks } = seeded({ lockService });
+      withLock.mockClear();
+      mocks.SpreadsheetApp.flush.mockClear();
+      const before = mutations(sheet);
+
+      read(table);
+
+      expect(withLock).not.toHaveBeenCalled();
+      expect(mocks.SpreadsheetApp.flush).not.toHaveBeenCalled();
+      expect(mutations(sheet)).toEqual(before);
+    },
+  );
+
+  it('returns the same entries as it did under the lock', () => {
+    const { table, entries } = seeded();
+    table.softDelete(at(entries, 1));
+
+    expect(names(table.find())).toEqual(['Ann', 'Cy']);
+    expect(names(table.find({ withTrashed: true }))).toEqual([
+      'Ann',
+      'Bob',
+      'Cy',
+    ]);
+    expect(names(table.findTrashed())).toEqual(['Bob']);
+    expect(names(table.findWhere((e) => (e.age as number) > 30))).toEqual([
+      'Cy',
+    ]);
+    expect(table.findOneWhere((e) => e.name === 'Cy')).toMatchObject({
+      age: 50,
+    });
+  });
+
+  it('reads correctly after rows were deleted, without trimming the sheet', () => {
+    const { table, sheet, entries } = seeded();
+    table.deleteMany([at(entries, 0), at(entries, 2)]);
+    sheet.insertRowsAfter(sheet.getMaxRows(), 5);
+    sheet.deleteRows.mockClear();
+
+    expect(names(table.find())).toEqual(['Bob']);
+    expect(sheet.deleteRows).not.toHaveBeenCalled();
+  });
+
+  it('reads an emptied table', () => {
+    const { table, entries } = seeded();
+    table.deleteMany(entries);
+
+    expect(table.find()).toEqual([]);
+    expect(table.findTrashed()).toEqual([]);
+  });
+
+  it('reads a table whose header is not on the first row', () => {
+    const { lockService, withLock } = createLockService();
+    const { db, mocks } = setup({
+      lockService,
+      rowNumbers: { columnKeys: 2, firstData: 3 },
+    });
+    enter(mocks.activeSpreadsheet.insertSheet('offset'), [
+      [''],
+      ['name'],
+      ['Ann'],
+    ]);
+    const table = db.table({ sheetName: 'offset' });
+
+    expect(names(table.find())).toEqual(['Ann']);
+    withLock.mockClear();
+    expect(names(table.find())).toEqual(['Ann']);
+    expect(withLock).not.toHaveBeenCalled();
+  });
+
+  it('takes exactly one lock to backfill rows typed into the sheet', () => {
+    const { lockService, withLock } = createLockService();
+    const { db, mocks } = setup({ lockService });
+    enter(mocks.activeSpreadsheet.insertSheet('people'), [
+      ['name'],
+      ['Ann'],
+      ['Bob'],
+    ]);
+    const table = db.table({ sheetName: 'people' });
+
+    expect(names(table.find())).toEqual(['Ann', 'Bob']);
+    expect(withLock).toHaveBeenCalledTimes(1);
+
+    withLock.mockClear();
+    expect(names(table.find())).toEqual(['Ann', 'Bob']);
+    expect(withLock).not.toHaveBeenCalled();
+  });
+
+  it('takes the lock to add missing system columns', () => {
+    const { lockService, withLock } = createLockService();
+    const { table } = setupTable('people', { lockService });
+    withLock.mockClear();
+
+    expect(table.find()).toEqual([]);
+
+    expect(withLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('takes the lock to backfill a single row that lacks an id', () => {
+    const { lockService, withLock } = createLockService();
+    const { table, sheet } = seeded({ lockService });
+    sheet.getRange(3, header(sheet).indexOf('_id') + 1).setValues([['']]);
+    withLock.mockClear();
+
+    const found = table.find();
+
+    expect(withLock).toHaveBeenCalledTimes(1);
+    expect(found.every((entry) => entry._id)).toBe(true);
+  });
+});
+
+describe('logging outside the lock', () => {
+  it('emits "Created table sheet" after the lock is released', () => {
+    const { db, logger, lockedAtLog } = setupProbed();
+
+    db.table({ sheetName: 'people' });
+
+    expect(logger.info).toHaveBeenCalledWith('Created table sheet', {
+      sheet: 'people',
+    });
+    expect(lockedAtLog).toEqual([false]);
+  });
+
+  it('emits "Added columns" after the lock is released', () => {
+    const { db, mocks, logger, lockedAtLog } = setupProbed();
+    const table = db.table({ sheetName: 'people' });
+    logger.info.mockClear();
+    lockedAtLog.length = 0;
+    mocks.LockService.getScriptLock.mockClear();
+
+    table.insert({ name: 'Ann' });
+
+    expect(mocks.LockService.getScriptLock).toHaveBeenCalledOnce();
+    expect(logger.info).toHaveBeenCalledWith('Added columns', {
+      sheet: 'people',
+      columns: expect.arrayContaining(['name']),
+    });
+    expect(lockedAtLog.length).toBeGreaterThan(0);
+    expect(lockedAtLog.every((locked) => !locked)).toBe(true);
+  });
+
+  it('emits "Backfilled system metadata" after the lock is released', () => {
+    const { db, mocks, logger, lockedAtLog } = setupProbed();
+    enter(mocks.activeSpreadsheet.insertSheet('people'), [['name'], ['Ann']]);
+    const table = db.table({ sheetName: 'people' });
+
+    table.find();
+
+    expect(logger.info).toHaveBeenCalledWith('Backfilled system metadata', {
+      sheet: 'people',
+      rows: 1,
+    });
+    expect(lockedAtLog.every((locked) => !locked)).toBe(true);
+  });
+
+  it('emits "Failed to decode JSON cells" after the lock is released', () => {
+    const { db, mocks, logger, lockedAtLog } = setupProbed();
+    const table = db.table({ sheetName: 'people' });
+    table.insert({ data: 'x' });
+    const sheet = sheetOf(mocks.activeSpreadsheet, 'people');
+    const col = header(sheet).indexOf('data') + 1;
+    sheet.getRange(2, col).setValues([['__JSON__{bad']]);
+    logger.warn.mockClear();
+    lockedAtLog.length = 0;
+    mocks.LockService.getScriptLock.mockClear();
+
+    table.updateWhere(() => true, { flag: 1 });
+
+    expect(mocks.LockService.getScriptLock).toHaveBeenCalledOnce();
+    expect(logger.warn).toHaveBeenCalledWith(
+      'Failed to decode JSON cells',
+      expect.objectContaining({ sheet: 'people', cells: 1 }),
+    );
+    expect(lockedAtLog.every((locked) => !locked)).toBe(true);
+  });
+
+  it('emits queued lines in order', () => {
+    const { db, logger } = setupProbed();
+    const table = db.table({ sheetName: 'people' });
+    logger.info.mockClear();
+
+    table.insert({ name: 'Ann' });
+    table.insert({ nick: 'A' });
+
+    expect(logger.info.mock.calls.map(([msg]) => msg)).toEqual([
+      'Added columns',
+      'Added columns',
+    ]);
+  });
+
+  it('still emits the lines when the operation throws', () => {
+    const { db, logger, lockedAtLog } = setupProbed();
+    const table = db.table({ sheetName: 'people' });
+    table.insert({ name: 'Ann' });
+    logger.info.mockClear();
+    lockedAtLog.length = 0;
+
+    expect(() => table.update({ _id: 'missing', extra: 1 })).toThrow(
+      '[GasSheetDb] Entry not found: missing',
+    );
+
+    expect(logger.info).toHaveBeenCalledWith('Added columns', {
+      sheet: 'people',
+      columns: ['extra'],
+    });
+    expect(lockedAtLog).toEqual([false]);
+  });
+
+  it('does not mask an operation error with a throwing logger', () => {
+    const { db, logger } = setupProbed();
+    const table = db.table({ sheetName: 'people' });
+    table.insert({ name: 'Ann' });
+    logger.info.mockImplementation(() => {
+      throw new Error('logger down');
+    });
+
+    expect(() => table.update({ _id: 'missing', extra: 1 })).toThrow(
+      '[GasSheetDb] Entry not found: missing',
+    );
+  });
+
+  it('does not fail a completed operation over a throwing logger', () => {
+    const { db, mocks, logger } = setupProbed();
+    const table = db.table({ sheetName: 'people' });
+    logger.info.mockImplementation(() => {
+      throw new Error('logger down');
+    });
+
+    const inserted = table.insert({ name: 'Ann' });
+
+    expect(inserted.name).toBe('Ann');
+    expect(mocks.console.error).toHaveBeenCalledWith(
+      expect.stringContaining('[GasSheetDb] Logger failed'),
+      expect.anything(),
+    );
+    expect(table.find()).toHaveLength(1);
   });
 });
