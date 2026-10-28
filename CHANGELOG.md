@@ -10,6 +10,7 @@
 - **BREAKING:** when no `lockService` is injected, the `GasLock` global is used if it is loaded, otherwise the minimal `LockService` fallback as before. It is looked up at each acquisition, so file load order does not matter. `lockService` on the instance and on tables is never `undefined`: it is the default service, which resolves `GasLock` itself
 - A table sheet that does not exist is now created under the lock, so `table()` can block, or throw when the lock cannot be acquired
 - **BREAKING:** every error message now carries the `[GasSheetDb]` prefix (`Empty data`, `Cannot map rows by "_id"`, `Entry not found`, `Cannot update entry without "_id"`), and deleting an entry without an `_id` now says `Cannot delete` rather than `Cannot update`. Code that matches on message text must be updated; match on `code` instead
+- Writes no longer trim trailing blank rows from the sheet. Rows are only added by inserts and removed by deletes
 - Lint, TypeScript and Prettier configuration and the test loader come from [`gas-dev-config`](https://github.com/yorsh-co/gas-dev-config)
 - Dependabot groups development dependencies into one weekly pull request
 - `npm run typecheck` also covers `test/` through `tsconfig.test.json`, and type-checks `peer/gas-sheetdb.peer.types.d.ts` standalone; `npm run check` runs the test suite and `gas-dev-config check`
@@ -23,6 +24,9 @@
 
 ### Fixed
 
+- Formulas, including array-formula spills, in table rows are preserved. `update`, `softDelete`, `restore` and the system metadata backfill rewrote the whole table body from its computed values, turning every formula into a static value
+- Writes touch only the cells whose value changes, grouped into one `setValues` call per run of adjacent cells and rows, instead of rewriting the whole body. A cell an entry sets to the value it already has is not written. A manual edit made to another cell while an operation runs is no longer overwritten, and the cost no longer grows with the table size
+- Deletes remove the rows in place, bottom-up and one `deleteRows` call per run of adjacent rows, instead of rewriting the body. When every non-frozen row would be deleted, one row is cleared instead, as Sheets refuses to delete them all
 - Log lines are no longer emitted while the lock is held. `Created table sheet`, `Added columns`, `Backfilled system metadata` and `Failed to decode JSON cells` are queued and emitted in order once the lock is released, also when the operation throws. A sheet-backed logger such as `gas-logger` takes the script lock itself, and its release ended the `gas-sheetdb` critical section early. A logger that throws no longer fails or masks the operation; the failure is reported through `console`
 - Creating a table sheet no longer throws `A sheet with the name ... already exists` when another execution creates it between the lookup and the insert: the lookup is repeated under the lock
 - An invalid `lockService`, such as Apps Script's `LockService` global passed instead of `GasLock`, is rejected when the instance is created instead of failing on the first write
