@@ -704,6 +704,8 @@ Rows that are entirely empty are not entries: they are skipped and given no meta
 
 Formula columns, including array-formula spills, can be added to a table sheet. Writes only touch the cells whose value changes, so formulas are preserved and manual edits elsewhere are never overwritten. Setting a formula cell to a different value in an entry replaces its formula.
 
+Inserts are appended after the last non-blank row of the table, and write only the cells that differ from the row they land in. To compute a column for every row, anchor one open-ended array formula in the first data row, for example `=ARRAYFORMULA(IF(LEN(B2:B), ROW(B2:B), ""))`: its blank output below the last entry does not count as an entry, and inserts leave it intact. A formula filled per row below the last entry makes those rows non-blank when it returns a value, so they are read as entries and inserts land below them. This is a known limit; use an array formula instead.
+
 ### Encoded Values
 
 `gas-sheetdb` automatically encodes and decodes objects and arrays when storing and reading entries.
@@ -737,7 +739,7 @@ Nested `Date`s inside objects and arrays are serialized as JSON and read back as
 
 #### Unsupported values
 
-`insert` and `update` throw a `VALIDATION_ERROR` naming the column, with `details` of `{ column, reason }`, before writing anything or changing any passed object, when a value is a `bigint`, `symbol` or `function`, cannot be serialized to JSON, or would exceed the Sheets limit of 50,000 characters per cell (measured on the stored text, including the `__JSON__` prefix of encoded values).
+`insert` and `update` throw a `VALIDATION_ERROR` naming the column, with `details` of `{ column, reason }`, before writing anything or changing any passed object, when a value is a `bigint`, `symbol` or `function`, cannot be serialized to JSON, or is a text longer than 49,999 characters. Sheets limits a cell's input to 50,000 characters and the apostrophe that stores a string as text counts towards it, so text and JSON-encoded values (measured including their `__JSON__` prefix) hold at most 49,999 characters.
 
 ### Locking
 
