@@ -813,6 +813,29 @@ Use it to send one sensitive table's events to their own sheet, or to bind per-t
 > [!IMPORTANT]
 > A sheet-backed logger writes to the spreadsheet **from inside the `gas-sheetdb` write lock** — `Added columns`, `Backfilled system metadata` and decode warnings all occur mid-operation. Each unbuffered line is a `SpreadsheetApp` round-trip that other executions wait on. Set `flushThreshold` so those writes batch outside the hot path, or keep `sheetLevel` at `warn`.
 
+### Errors
+
+Data errors are thrown with a stable `statusCode` and `code`:
+
+| Cause                                                        | `statusCode` | `code`             |
+| ------------------------------------------------------------ | ------------ | ------------------ |
+| Missing `_id` on `update`, `softDelete`, `restore`, `delete` | `400`        | `VALIDATION_ERROR` |
+| No entry with the given `_id`                                | `404`        | `NOT_FOUND`        |
+
+When [`gas-error`](https://github.com/yorsh-co/gas-error) is loaded, these are its `GasValidationError` and `GasNotFoundError`, so `GasError.handle` reports them with the right status instead of a generic 500. Otherwise they are a `GasSheetDbError` carrying the same `statusCode`, `code`, `details` and `isOperational` fields.
+
+```js
+try {
+  table.update({ _id: 'missing' });
+} catch (err) {
+  if (err.isOperational) console.warn(err.statusCode, err.code, err.message);
+  else throw err;
+}
+```
+
+> [!NOTE]
+> Configuration and programmer errors (invalid `lockScope` or `logger`, conflicting spreadsheet options, no active spreadsheet) are plain `Error`s, so they are reported as unexpected. Every message starts with `[GasSheetDb]`.
+
 ### Entry Point
 
 #### GasSheetDb

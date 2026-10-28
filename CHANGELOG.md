@@ -6,12 +6,14 @@
 
 ### Changed
 
+- **BREAKING:** every error message now carries the `[GasSheetDb]` prefix (`Empty data`, `Cannot map rows by "_id"`, `Entry not found`, `Cannot update entry without "_id"`), and deleting an entry without an `_id` now says `Cannot delete` rather than `Cannot update`. Code that matches on message text must be updated; match on `code` instead
 - Lint, TypeScript and Prettier configuration and the test loader come from [`gas-dev-config`](https://github.com/yorsh-co/gas-dev-config)
 - Dependabot groups development dependencies into one weekly pull request
 - `npm run typecheck` also covers `test/` through `tsconfig.test.json`, and type-checks `peer/gas-sheetdb.peer.types.d.ts` standalone; `npm run check` runs the test suite and `gas-dev-config check`
 
 ### Added
 
+- Typed data errors: a missing `_id` throws a 400 `VALIDATION_ERROR` and an unknown `_id` a 404 `NOT_FOUND`. When [`gas-error`](https://github.com/yorsh-co/gas-error) is loaded they are its `GasValidationError` and `GasNotFoundError`, so `GasError.handle` reports them correctly; otherwise they are a `GasSheetDbError` with the same `statusCode`, `code`, `details` and `isOperational` fields. Both are still `instanceof Error`. Configuration errors remain plain `Error`s
 - Vitest test suite with in-memory Apps Script service mocks that model Sheets' value coercion, grid bounds and frozen-row rules
 
 ---
