@@ -24,16 +24,16 @@ Entries can be queried and updated through a `GasSheetDb` instance using ORM-lik
 - Automatically creates missing columns when new properties appear during inserts or updates
 - Automatically adds `_id`, `_createdAt`, `_updatedAt`, and `_isDeleted` metadata fields to new entries
 - Automatically mutates the metadata properties of entries passed to write operations
-- Returns the full entry object after partial updates
 - Instance-based API — configure spreadsheet source and row numbers per instance, with per-table overrides
-- Objects and arrays are JSON serialized
+- Objects and arrays are JSON serialized; strings are stored as text, exactly as given
+- Cell-scoped writes: only changed cells are written, so formula columns and manual edits are preserved
 - Accepts new entries inserted manually to the spreadsheet
 - Supports both bound and standalone spreadsheets
-- Uses Apps Script `LockService` for safer concurrent writes, with a configurable lock scope and timeout per instance or per table (full transactions are not yet supported)
-- Reads take no lock when the sheet needs no repair
+- Lock-free reads; writes run under an Apps Script lock with a configurable scope and timeout (`lockScope`, `lockTimeoutMs`) per instance or per table (full transactions are not yet supported)
 - Uses [`gas-lock`](https://github.com/yorsh-co/gas-lock) automatically when it is loaded, or accepts an injected lock service, so nested locks across multiple services in one execution do not end each other early
-- Written in TypeScript with generated JavaScript distribution
+- Typed data errors (`400`, `404`, `409`), using [`gas-error`](https://github.com/yorsh-co/gas-error) classes when it is loaded
 - Optionally accepts an injected logger ([`gas-logger`](https://github.com/yorsh-co/gas-logger), `console`, or any `info`/`warn` sink) to route schema and metadata events through your own levels, bindings and sheet sink
+- Written in TypeScript with generated JavaScript distribution
 - No external dependencies beyond built-in Apps Script services
 
 ### Example Usage
@@ -65,12 +65,16 @@ const revoked = usersTable.findWhere((user) => user.access === 'revoked');
 usersTable.softDeleteMany(revoked);
 
 // Restore
-const usersToRestore = usersTable.findTrashed((user) => user.project ===='projectA1');
+const usersToRestore = usersTable.findTrashed(
+  (user) => user.project === 'projectA1',
+);
 
 usersTable.restoreMany(usersToRestore);
 
 // Permanently delete
-const usersToDelete =usersTable.findTrashed((user) => user.project ===='projectB1');
+const usersToDelete = usersTable.findTrashed(
+  (user) => user.project === 'projectB1',
+);
 
 usersTable.deleteMany(usersToDelete);
 ```
@@ -280,15 +284,17 @@ src/lib/gas-sheetdb/
 > ```json
 > {
 >   "filePushOrder": [
->     "dist/lib/gas-sheetdb/gas-sheetdb.constants.js",
->     "dist/lib/gas-sheetdb/gas-sheetdb.codec.js",
->     "dist/lib/gas-sheetdb/gas-sheetdb.schema.js",
->     "dist/lib/gas-sheetdb/gas-sheetdb.table.js",
->     "dist/lib/gas-sheetdb/gas-sheetdb.class.js",
->     "dist/lib/gas-sheetdb/gas-sheetdb.types.js"
+>     "src/lib/gas-sheetdb/gas-sheetdb.constants.js",
+>     "src/lib/gas-sheetdb/gas-sheetdb.codec.js",
+>     "src/lib/gas-sheetdb/gas-sheetdb.errors.js",
+>     "src/lib/gas-sheetdb/gas-sheetdb.schema.js",
+>     "src/lib/gas-sheetdb/gas-sheetdb.table.js",
+>     "src/lib/gas-sheetdb/gas-sheetdb.class.js"
 >   ]
 > }
 > ```
+>
+> Use the path where the files land in your pushed project, e.g. `src/lib/gas-sheetdb/...` when pushing the subtree as-is. If `.clasp.json` sets a `rootDir` or you push a build output folder, use the paths relative to that folder instead.
 >
 > Alternatively, you can manually move these files to the top of the file list in the Apps Script editor.
 >
@@ -408,10 +414,10 @@ const user = usersTable.findOneWhere((user) => user._id === 'abc123');
 const deletedUsers = usersTable.findTrashed();
 
 // optionally filter soft-deleted entries
-const deletedUsers = usersTable.findTrashed((user) => user._id === 'abc123');
+const deletedUser = usersTable.findTrashed((user) => user._id === 'abc123');
 
 // also supported
-const deletedUsers = usersTable.find({ onlyTrashed: true });
+const trashedUsers = usersTable.find({ onlyTrashed: true });
 ```
 
 ### Find Active and Deleted Entries
@@ -467,7 +473,7 @@ const oldUser = usersTable.findOneWhere(
 );
 
 const userRoleConfig = {
-  _id: user._id,
+  _id: oldUser._id,
   role: 'editor',
 };
 
@@ -735,7 +741,7 @@ Nested `Date`s inside objects and arrays are serialized as JSON and read back as
 
 ### Locking
 
-Every write operation runs inside an Apps Script `LockService` lock, and so does creating a missing table sheet. The scope and the time to wait for the lock are configurable per instance, and overridable per table:
+Every write operation runs inside an Apps Script lock, and so does creating a missing table sheet. By default the lock is taken through `gas-lock` when it is loaded, else directly through `LockService` (see [The lock service](#the-lock-service)). The scope and the time to wait for the lock are configurable per instance, and overridable per table:
 
 ```js
 const sheetDb = new GasSheetDb({
@@ -803,7 +809,7 @@ const sheetDb = new GasSheetDb({
 
 Failures `gas-sheetdb` cannot recover from are thrown, not logged, so nothing is ever reported at `error` — an unexpected error reaches your own handler with its stack intact.
 
-By default these go to the execution log via `console`, prefixed with `[GasSheetDb]`.
+By default these go to the execution log via `console`, prefixed with `[GasSheetDb]`. Lines are emitted after the lock is released, never while it is held.
 
 #### Injecting a logger
 
@@ -823,7 +829,7 @@ const sheetDb = new GasSheetDb({
 });
 ```
 
-Plain `console` is accepted too, as is any custom sink of the same shape. An object missing `info` or `warn` is rejected when the instance or table is created, rather than at the first log call.
+Use `gas-logger` `1.2.0` or later: its `lockService` option, and its automatic use of `GasLock` when loaded, stop a buffered flush or sheet creation from ending a caller's own lock section. Plain `console` is accepted too, as is any custom sink of the same shape. An object missing `info` or `warn` is rejected when the instance or table is created, rather than at the first log call.
 
 #### Per-table loggers
 
@@ -950,7 +956,7 @@ deleteWhere(predicateFn, options);
 ```
 
 > [!NOTE]
-> All write operations mutate the original object [metadata](#metadata) and also return the persisted entry(ies). This keeps the in-memory instance up to date with the persisted state, while also allowing for partial entries to be passed to the write operation methods as long as the original entry `_id` property is included.
+> `insert`, `insertMany`, `update`, `updateMany`, `softDelete`, `softDeleteMany`, `restore` and `restoreMany` mutate the original object [metadata](#metadata) and also return the persisted entry(ies). This keeps the in-memory instance up to date with the persisted state, while also allowing for partial entries to be passed to the update methods as long as the original entry `_id` property is included. `updateWhere`, `updateOneWhere`, `softDeleteWhere` and `deleteWhere` return the matched entries (`updateOneWhere` returns one entry or `null`; `deleteWhere` returns them as they were before deletion). `deleteOne` and `deleteMany` return nothing.
 
 ### Example Workflow
 
@@ -981,15 +987,42 @@ const revoked = usersTable.findWhere((user) => user.access === 'revoked');
 usersTable.softDeleteMany(revoked);
 
 // Restore
-const usersToRestore = usersTable.findTrashed((user) => user.project ===='projectA1');
+const usersToRestore = usersTable.findTrashed(
+  (user) => user.project === 'projectA1',
+);
 
 usersTable.restoreMany(usersToRestore);
 
 // Permanently delete
-const usersToDelete =usersTable.findTrashed((user) => user.project ===='projectB1');
+const usersToDelete = usersTable.findTrashed(
+  (user) => user.project === 'projectB1',
+);
 
 usersTable.deleteMany(usersToDelete);
 ```
+
+### Peer Type Declarations
+
+Consuming gas-* libraries can type-check against `GasSheetDb` without vendoring its source. The canonical declarations live in `peer/gas-sheetdb.peer.types.d.ts`: copy that file into the consuming package (e.g. `src/internal/`) and do not edit the copy.
+
+## Migrating to 2.0.0
+
+Each item below is a breaking change. See the [CHANGELOG](CHANGELOG.md) for the full list of fixes and additions.
+
+- **`sheetName` is required.** `table()` throws without a non-empty string, and unnamed `gsd-table-N` tables are gone. Pass `sheetName` to every `table()` call.
+- **`useActiveSpreadsheet: false` needs a source.** Without `spreadsheet`, `spreadsheetUrl` or `spreadsheetId` the constructor throws instead of using the active spreadsheet. Pass one, or omit the option.
+- **Strings are stored as text.** `'0012'`, `'TRUE'` and `'2024-01-02'` read back as strings, not as the number, boolean or `Date` Sheets would parse. Store real numbers, booleans and `Date`s where you relied on the coercion.
+- **Reads take no lock** unless the sheet needs repair, and no longer trim trailing blank rows. Do not rely on a read serializing with writers; use the [predicate-based writes](#predicate-based-writes) for read-modify-write.
+- **`GasLock` is used when loaded.** With no `lockService` injected, the `GasLock` global is used, else `LockService` directly. Load `gas-lock` so every service in an execution shares one lock registry, or inject `lockService` explicitly.
+- **Error messages carry the `[GasSheetDb]` prefix**, and deleting without an `_id` says `Cannot delete`. Match on `code`, not on message text.
+- **`rowNumbers` is validated** when an instance or table is created: `columnKeys` and `firstData` must be positive integers and `firstData` must be greater than `columnKeys`. Fix configurations that relied on `0`, fractions or `firstData <= columnKeys`.
+- **Empty batches return `[]`.** `insertMany([])` no longer throws `Empty data`; `updateMany`, `softDeleteMany` and `restoreMany` return `[]`, and `deleteMany` returns nothing. Check the batch yourself if you relied on the throw.
+- **Duplicate `_id` on insert throws a `409` `CONFLICT`.** Inserting an entry returned by `find()` now fails. Remove its `_id` and the other system fields to insert a copy, or use `update`:
+
+  ```js
+  const { _id, _createdAt, _updatedAt, _isDeleted, ...copy } = user;
+  usersTable.insert(copy);
+  ```
 
 ## Development
 
