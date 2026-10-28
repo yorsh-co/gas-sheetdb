@@ -345,6 +345,9 @@ class _GasSheetDbTable {
     // returned in their post-`_buildRow` state
     const updatedRowIndexes = [];
 
+    // each touched row as read, to find the cells the update changes
+    const originalRows = new Map<number, GasSheetDbCellValue[]>();
+
     for (const entry of entries) {
       if (!entry._id) {
         throw _GasSheetDbErrors.validation(
@@ -362,12 +365,15 @@ class _GasSheetDbTable {
 
       this._applyUpdateMetadata(entry);
 
+      if (!originalRows.has(rowIndex))
+        originalRows.set(rowIndex, data[rowIndex]!);
+
       data[rowIndex] = this._buildRow(entry, data[rowIndex]);
 
       updatedRowIndexes.push(rowIndex);
     }
 
-    this._setTableBodyData(data);
+    this._writeChangedCells(data, originalRows);
 
     // return the entries in their post-`_buildRow` state
     return this._decodeRows(
@@ -531,14 +537,34 @@ class _GasSheetDbTable {
       entriesRowIndexes.push(rowIndex);
     }
 
-    // sort in reverse order to delete from the bottom up, once per row
     const uniqueRowIndexes = [...new Set(entriesRowIndexes)].sort(
-      (a, b) => b - a,
+      (a, b) => a - b,
     );
 
-    uniqueRowIndexes.forEach((rowIndex) => data.splice(rowIndex, 1));
+    if (!uniqueRowIndexes.length) return;
 
-    this._setTableBodyData(data);
+    // Sheets refuses to delete every non-frozen row: spare the last one, and
+    // clear its content instead
+    if (
+      this.sheet.getMaxRows() - uniqueRowIndexes.length <=
+      this.sheet.getFrozenRows()
+    ) {
+      this.sheet
+        .getRange(
+          this.rowNumbers.firstData + uniqueRowIndexes.pop()!,
+          1,
+          1,
+          this.sheet.getMaxColumns(),
+        )
+        .clearContent();
+    }
+
+    // delete from the bottom up, so earlier row numbers stay valid
+    this._groupRuns(uniqueRowIndexes)
+      .reverse()
+      .forEach(([start, count]) =>
+        this.sheet.deleteRows(this.rowNumbers.firstData + start, count),
+      );
   }
 
   /**
@@ -586,42 +612,90 @@ class _GasSheetDbTable {
   }
 
   /**
-   * Write to the entire table body on the sheet.
+   * Write only the cells of `data` that differ from the rows as they were
+   * read, so formulas, array-formula spills and manual edits elsewhere are
+   * left alone.
+   *
+   * Changed cells are grouped into column runs per row; consecutive rows
+   * with the same runs are written together, one `setValues` call per run.
    */
-  private _setTableBodyData(data: GasSheetDbCellValue[][] = []): void {
-    // deleting every entry leaves nothing to write: clear the old body and
-    // keep its first row, as Sheets refuses to delete all non-frozen rows
-    if (!data.length) {
-      const firstDataRow = this.rowNumbers.firstData;
-      const lastRow = this.sheet.getLastRow();
+  private _writeChangedCells(
+    data: GasSheetDbCellValue[][],
+    originalRows: Map<number, GasSheetDbCellValue[]>,
+  ): void {
+    const blocks: { start: number; count: number; runs: [number, number][] }[] =
+      [];
 
-      if (lastRow >= firstDataRow) {
-        this.sheet
-          .getRange(
-            firstDataRow,
-            1,
-            lastRow - firstDataRow + 1,
-            this.sheet.getMaxColumns(),
-          )
-          .clearContent();
+    for (const rowIndex of [...originalRows.keys()].sort((a, b) => a - b)) {
+      const original = originalRows.get(rowIndex)!;
+
+      const changed = data[rowIndex]!.flatMap((value, colIndex) =>
+        this._isSameCell(value, original[colIndex]) ? [] : [colIndex],
+      );
+
+      if (!changed.length) continue;
+
+      const runs = this._groupRuns(changed);
+      const last = blocks[blocks.length - 1];
+
+      if (
+        last &&
+        last.start + last.count === rowIndex &&
+        JSON.stringify(last.runs) === JSON.stringify(runs)
+      ) {
+        last.count++;
+      } else {
+        blocks.push({ start: rowIndex, count: 1, runs });
       }
-
-      this._removeExtraRows(1);
-      return;
     }
 
-    if (!data[0]?.length) throw new Error('[GasSheetDb] Empty data');
+    for (const { start, count, runs } of blocks) {
+      for (const [colStart, colCount] of runs) {
+        this.sheet
+          .getRange(
+            this.rowNumbers.firstData + start,
+            colStart + 1,
+            count,
+            colCount,
+          )
+          .setValues(
+            data
+              .slice(start, start + count)
+              .map((row) => row.slice(colStart, colStart + colCount)),
+          );
+      }
+    }
+  }
 
-    const tableBodyRange = this.sheet.getRange(
-      this.rowNumbers.firstData,
-      1,
-      data.length,
-      data[0].length,
-    );
+  /**
+   * Whether two cell values are equal, treating a missing cell as blank and
+   * comparing dates by time.
+   */
+  private _isSameCell(
+    a: GasSheetDbCellValue | undefined,
+    b: GasSheetDbCellValue | undefined,
+  ): boolean {
+    if (a instanceof Date && b instanceof Date) {
+      return a.getTime() === b.getTime();
+    }
 
-    tableBodyRange.setValues(data);
+    return (a ?? '') === (b ?? '');
+  }
 
-    this._removeExtraRows(data.length);
+  /**
+   * Group ascending, unique indexes into contiguous `[start, count]` runs.
+   */
+  private _groupRuns(indexes: number[]): [number, number][] {
+    const runs: [number, number][] = [];
+
+    for (const index of indexes) {
+      const run = runs[runs.length - 1];
+
+      if (run && run[0] + run[1] === index) run[1]++;
+      else runs.push([index, 1]);
+    }
+
+    return runs;
   }
 
   /**
@@ -650,27 +724,6 @@ class _GasSheetDbTable {
 
     if (rowsNeeded > 0) {
       this.sheet.insertRowsAfter(lastRow, rowsNeeded);
-    }
-  }
-
-  /**
-   * Remove extra rows from the sheet.
-   * Exits early if the table body has no rows to avoid
-   * exception 'it is not possible to delete all non-frozen rows'.
-   */
-  private _removeExtraRows(tableBodyLen: number): void {
-    if (!tableBodyLen) return;
-
-    const lastTableBodyRow = this.rowNumbers.firstData - 1 + tableBodyLen;
-
-    if (lastTableBodyRow < this.rowNumbers.firstData) return;
-
-    const maxRows = this.sheet.getMaxRows();
-
-    const numExtraRows = maxRows - lastTableBodyRow;
-
-    if (numExtraRows > 0) {
-      this.sheet.deleteRows(lastTableBodyRow + 1, numExtraRows);
     }
   }
 
@@ -846,13 +899,14 @@ class _GasSheetDbTable {
 
     const now = new Date();
 
-    // gates the write below, and is logged as one line rather than one per
-    // row: a table filled by hand or by another process backfills every row
-    // at once
-    let backfilledRows = 0;
+    // written and logged as one batch rather than per row: a table filled by
+    // hand or by another process backfills every row at once
+    const originalRows = new Map<number, GasSheetDbCellValue[]>();
 
-    for (const row of data) {
+    for (const [rowIndex, row] of data.entries()) {
       if (!this._rowNeedsBackfill(row, columns)) continue;
+
+      originalRows.set(rowIndex, [...row]);
 
       if (!row[idColIndex]) row[idColIndex] = this._generateId();
       if (!row[createdAtColIndex]) row[createdAtColIndex] = now;
@@ -860,17 +914,15 @@ class _GasSheetDbTable {
       if (typeof row[isTrashedColIndex] !== 'boolean') {
         row[isTrashedColIndex] = false;
       }
-
-      backfilledRows++;
     }
 
-    if (!backfilledRows) return;
+    if (!originalRows.size) return;
 
-    this._setTableBodyData(data);
+    this._writeChangedCells(data, originalRows);
 
     this._logSink.info('Backfilled system metadata', {
       sheet: this.sheetName,
-      rows: backfilledRows,
+      rows: originalRows.size,
     });
   }
 
