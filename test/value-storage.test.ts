@@ -116,48 +116,54 @@ describe('text storage (C4, M4)', () => {
 describe('unsupported values (M7)', () => {
   const column = 'note';
 
-  it('accepts a cell of exactly 50,000 characters', () => {
-    const { table } = setupTable();
+  it('stores a text of 49,999 characters, the longest Sheets accepts', () => {
+    const { table, sheet } = setupTable();
 
-    table.insert({ [column]: 'x'.repeat(50_000) });
+    table.insert({ [column]: 'x'.repeat(49_999) });
 
-    expect(table.find()[0]![column]).toHaveLength(50_000);
+    expect(table.find()[0]![column]).toHaveLength(49_999);
+    expect(rows(sheet)[0]![column]).toHaveLength(49_999);
   });
 
-  it('rejects a longer cell on insert, writing and mutating nothing', () => {
+  it('rejects a 50,000 character text on insert, writing and mutating nothing', () => {
     const { table, sheet } = setupTable();
     table.find();
     const before = sheet.calls.setValues.length;
     const good = { name: 'ok' };
-    const bad = { [column]: 'x'.repeat(50_001) };
+    const bad = { [column]: 'x'.repeat(50_000) };
 
     expect(() => table.insertMany([good, bad])).toThrow(
       expect.objectContaining({
         message: expect.stringMatching(/^\[GasSheetDb\] .*"note"/),
         code: 'VALIDATION_ERROR',
-        details: { column, reason: expect.stringContaining('50000') },
+        details: { column, reason: expect.stringContaining('49999') },
       }),
     );
     expect(sheet.calls.setValues.length).toBe(before);
     expect(good).toEqual({ name: 'ok' });
-    expect(bad).toEqual({ [column]: 'x'.repeat(50_001) });
+    expect(bad).toEqual({ [column]: 'x'.repeat(50_000) });
   });
 
-  it('measures an encoded object, not the apostrophe', () => {
+  it('counts the text escape towards the limit of an encoded object', () => {
     const { table } = setupTable();
+    // `__JSON__` plus the JSON of `{ v }` is 16 characters longer than `v`
+    const encoded = (length: number) => ({ v: 'x'.repeat(length - 16) });
 
-    expect(() => table.insert({ [column]: { v: 'x'.repeat(50_000) } })).toThrow(
-      /\[GasSheetDb\]/,
+    expect(() => table.insert({ [column]: encoded(50_000) })).toThrow(
+      expect.objectContaining({ code: 'VALIDATION_ERROR' }),
     );
+
+    table.insert({ [column]: encoded(49_999) });
+    expect(table.find()[0]![column]).toEqual(encoded(49_999));
   });
 
-  it('rejects an oversize value on update, writing and mutating nothing', () => {
+  it('rejects a 50,000 character text on update, writing and mutating nothing', () => {
     const { table, sheet } = setupTable();
     const a = table.insert({ [column]: 'a' });
     const b = table.insert({ [column]: 'b' });
     const before = sheet.calls.setValues.length;
     const first = { ...a, [column]: 'changed' };
-    const second = { ...b, [column]: 'x'.repeat(50_001) };
+    const second = { ...b, [column]: 'x'.repeat(50_000) };
 
     expect(() => table.updateMany([first, second])).toThrow(
       expect.objectContaining({ code: 'VALIDATION_ERROR' }),
