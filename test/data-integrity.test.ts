@@ -9,6 +9,7 @@ import {
   setupTable,
   sheetOf,
 } from './helpers';
+import type { FakeSheet } from './mocks';
 
 const NOW = new Date('2024-01-01T00:00:00Z');
 
@@ -547,7 +548,7 @@ describe('insert conflicts', () => {
     expect(table.insert({ _id: 'mine', name: 'Cy' })._id).toBe('mine');
   });
 
-  it('reads the _id column once, and only when an _id is supplied', () => {
+  it('reads the sheet once per insert, with or without an _id', () => {
     const { table, sheet } = seeded();
     const read = sheet.getRange;
     let reads = 0;
@@ -563,7 +564,8 @@ describe('insert conflicts', () => {
     reads = 0;
     table.insert({ _id: 'mine', name: 'with id' });
 
-    expect(reads - withoutId).toBe(1);
+    expect(withoutId).toBeGreaterThan(0);
+    expect(reads).toBe(withoutId);
   });
 });
 
@@ -590,5 +592,207 @@ describe('a stale cached schema on delete', () => {
       sheet: 'people',
       columns: ['name'],
     });
+  });
+});
+
+describe('the insert position', () => {
+  const SPILL_COLUMN = 6;
+  const NAME_COLUMN = 1;
+  const OPEN_ENDED = '=ARRAYFORMULA(IF(LEN(B2:B), ROW(B2:B), ""))';
+
+  /** Ann and Bob inserted through the library, with a `rank` column after them. */
+  const seeded = (context = setupTable()) => {
+    context.table.insertMany([{ name: 'Ann' }, { name: 'Bob' }]);
+    context.sheet.getRange(1, SPILL_COLUMN).setValues([['rank']]);
+    context.sheet.calls.setValues.length = 0;
+    return context;
+  };
+
+  /** Rows 2 to the last row of the sheet, `''` below the two entries. */
+  const openEnded = (sheet: FakeSheet) =>
+    sheet.spill(
+      2,
+      SPILL_COLUMN,
+      Array.from({ length: sheet.getMaxRows() - 1 }, (_, i) =>
+        i < 2 ? i + 2 : '',
+      ),
+      OPEN_ENDED,
+    );
+
+  /** Whether any `setValues` call wrote to column `col`. */
+  const wroteColumn = (sheet: FakeSheet, col: number) =>
+    sheet.calls.setValues.some((c) => c.col <= col && col < c.col + c.numCols);
+
+  const names = (sheet: FakeSheet, col = NAME_COLUMN) =>
+    sheet
+      .getRange(2, col, 12, 1)
+      .getValues()
+      .map(([name]) => name);
+
+  it('lands below an open-ended spill, leaving it intact', () => {
+    const { table, sheet } = seeded();
+    openEnded(sheet);
+    expect(sheet.getLastRow()).toBe(1000);
+
+    table.insert({ name: 'Cy' });
+
+    expect(names(sheet).slice(0, 4)).toEqual(['Ann', 'Bob', 'Cy', '']);
+    expect(sheet.brokenSpills).toEqual([]);
+    expect(sheet.getRange(2, SPILL_COLUMN).getFormulas()).toEqual([
+      [OPEN_ENDED],
+    ]);
+    expect(wroteColumn(sheet, SPILL_COLUMN)).toBe(false);
+    expect(sheet.insertRowsAfter).not.toHaveBeenCalled();
+    expect(table.find().map((e) => e.name)).toEqual(['Ann', 'Bob', 'Cy']);
+  });
+
+  it('keeps landing in the next row across inserts', () => {
+    const { table, sheet } = seeded();
+    openEnded(sheet);
+
+    table.insert({ name: 'Cy' });
+    table.insertMany([{ name: 'Dee' }, { name: 'Eve' }]);
+    table.insert({ name: 'Fay' });
+
+    expect(names(sheet).slice(0, 6)).toEqual([
+      'Ann',
+      'Bob',
+      'Cy',
+      'Dee',
+      'Eve',
+      'Fay',
+    ]);
+    expect(sheet.brokenSpills).toEqual([]);
+  });
+
+  it('writes a batch into blank rows with one call per run of columns', () => {
+    const { table, sheet } = seeded();
+    openEnded(sheet);
+
+    table.insertMany([{ name: 'Cy' }, { name: 'Dee' }, { name: 'Eve' }]);
+
+    expect(
+      sheet.calls.setValues.map((c) => [c.row, c.col, c.numRows, c.numCols]),
+    ).toEqual([[4, 1, 3, 5]]);
+  });
+
+  it('does not write the cells of an entry it leaves unset', () => {
+    const { table, sheet } = seeded();
+    table.insert({ name: 'Cy', note: 'x' });
+    sheet.calls.setValues.length = 0;
+    openEnded(sheet);
+
+    table.insert({ name: 'Dee' });
+
+    // `note` sits after `rank`; the entry does not set it, nor the spill
+    expect(wroteColumn(sheet, SPILL_COLUMN)).toBe(false);
+    expect(wroteColumn(sheet, SPILL_COLUMN + 1)).toBe(false);
+  });
+
+  it('lands in the first row of an empty table below a spill', () => {
+    const { table, sheet } = setupTable();
+    table.find();
+    sheet.getRange(1, SPILL_COLUMN).setValues([['rank']]);
+    sheet.spill(2, SPILL_COLUMN, Array(999).fill(''), OPEN_ENDED);
+
+    table.insert({ name: 'Ann' });
+
+    // `name` is appended after the last used column, the spill's
+    expect(names(sheet, SPILL_COLUMN + 1)[0]).toBe('Ann');
+    expect(sheet.brokenSpills).toEqual([]);
+  });
+
+  it('does not write a closed spill', () => {
+    const { table, sheet } = seeded();
+    sheet.spill(2, SPILL_COLUMN, [2, 3], '=ARRAYFORMULA(ROW(B2:B3))');
+
+    table.insert({ name: 'Cy' });
+
+    expect(names(sheet).slice(0, 3)).toEqual(['Ann', 'Bob', 'Cy']);
+    expect(sheet.brokenSpills).toEqual([]);
+    expect(wroteColumn(sheet, SPILL_COLUMN)).toBe(false);
+  });
+
+  it('keeps a per-row formula column that was filled below the entries', () => {
+    const { table, sheet } = seeded();
+    sheet
+      .getRange(2, SPILL_COLUMN, 3, 1)
+      .setValues([['=R2'], ['=R3'], ['=R4']]);
+    sheet.calls.setValues.length = 0;
+
+    table.insert({ name: 'Cy' });
+
+    expect(sheet.getRange(2, SPILL_COLUMN, 3, 1).getFormulas()).toEqual([
+      ['=R2'],
+      ['=R3'],
+      ['=R4'],
+    ]);
+    expect(names(sheet).slice(0, 3)).toEqual(['Ann', 'Bob', 'Cy']);
+    expect(wroteColumn(sheet, SPILL_COLUMN)).toBe(false);
+  });
+
+  it('treats a row whose formula returns a value as taken', () => {
+    const { table, sheet } = seeded();
+    sheet.getRange(4, SPILL_COLUMN).setValues([['=R4']]);
+    sheet.evaluate = () => 'filled';
+
+    table.insert({ name: 'Cy' });
+
+    expect(names(sheet).slice(0, 4)).toEqual(['Ann', 'Bob', '', 'Cy']);
+    expect(sheet.getRange(4, SPILL_COLUMN).getFormulas()).toEqual([['=R4']]);
+  });
+
+  it('does not overwrite a row a person typed without metadata', () => {
+    const { table, sheet } = typed([
+      [...HEADER, 'name'],
+      row('a', 'Ann'),
+      ['', '', '', '', 'Typed'],
+    ]);
+
+    table.insert({ name: 'Cy' });
+
+    expect(sheet.getRange(3, 5).getValues()).toEqual([['Typed']]);
+    expect(sheet.getRange(4, 5).getValues()).toEqual([['Cy']]);
+  });
+
+  it('does not fill a blank row between entries', () => {
+    const { table, sheet } = typed([
+      [...HEADER, 'name'],
+      row('a', 'Ann'),
+      Array(5).fill(''),
+      row('b', 'Bob'),
+    ]);
+
+    table.insert({ name: 'Cy' });
+
+    expect(sheet.getRange(3, 1, 1, 5).getValues()).toEqual([Array(5).fill('')]);
+    expect(sheet.getRange(5, 5).getValues()).toEqual([['Cy']]);
+  });
+
+  it('reuses blank rows below the entries before adding any', () => {
+    const { table, sheet } = typed([
+      [...HEADER, 'name'],
+      row('a', 'Ann'),
+      Array(5).fill(''),
+      Array(5).fill(''),
+    ]);
+
+    table.insertMany([{ name: 'Bob' }, { name: 'Cy' }, { name: 'Dee' }]);
+
+    expect(names(sheet, 5).slice(0, 4)).toEqual(['Ann', 'Bob', 'Cy', 'Dee']);
+    expect(sheet.insertRowsAfter).not.toHaveBeenCalled();
+  });
+
+  it('adds rows only when the sheet runs out', () => {
+    const { table, sheet } = setupTable();
+    table.insertMany(
+      Array.from({ length: 999 }, (_, i) => ({ name: `n${i}` })),
+    );
+    expect(sheet.getLastRow()).toBe(1000);
+
+    table.insert({ name: 'last' });
+
+    expect(sheet.insertRowsAfter).toHaveBeenCalledWith(1000, 1);
+    expect(sheet.getRange(1001, NAME_COLUMN).getValues()).toEqual([['last']]);
   });
 });

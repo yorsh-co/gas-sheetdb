@@ -287,7 +287,11 @@ class _GasSheetDbTable {
 
     return this._withLock(() => {
       this.schema.reload();
-      this._assertUniqueIds(entries);
+
+      // one read serves the uniqueness check and the append position
+      const body = this._getTableBodyData();
+
+      this._assertUniqueIds(entries, body);
       this._assertStorable(entries);
 
       entries.forEach((entry) => this._applyInsertMetadata(entry));
@@ -297,7 +301,7 @@ class _GasSheetDbTable {
       this.schema.reload();
 
       const data = entries.map((entry) => this._buildRow(entry));
-      this._appendTableBodyData(data);
+      this._appendTableBodyData(data, body);
 
       const insertedEntries = this._decodeRows(data);
 
@@ -744,25 +748,43 @@ class _GasSheetDbTable {
   }
 
   /**
-   * Append rows to the sheet.
+   * Append rows after the last non-blank row of the table body, `body` being
+   * the body as read before the append.
+   *
+   * The position comes from the body rather than `getLastRow()`: an
+   * open-ended array formula spills `''` down to the last row of the sheet,
+   * and Sheets counts that as content. Blank rows below the last entry are
+   * reused, and rows are added only when the sheet runs out.
+   *
+   * Only the cells that differ from the target rows are written, so a
+   * spilled or formula cell in a column the entries do not set is left alone.
    */
-  private _appendTableBodyData(data: GasSheetDbCellValue[][]): void {
+  private _appendTableBodyData(
+    data: GasSheetDbCellValue[][],
+    body: GasSheetDbCellValue[][],
+  ): void {
     if (!data.length || !data[0]?.length)
       throw new Error('[GasSheetDb] Empty data');
 
-    // never into a spacer row between the header and the first data row
-    const startRow = Math.max(
-      this.sheet.getLastRow() + 1,
-      this.rowNumbers.firstData,
-    );
+    let lastIndex = body.length - 1;
 
-    this._ensureBlankRows(startRow, data.length);
+    while (lastIndex >= 0 && this._isBlankRow(body[lastIndex]!)) lastIndex--;
 
-    this.sheet
-      .getRange(startRow, 1, data.length, data[0].length)
-      .setValues(
-        data.map((row) => row.map(_GasSheetDbValueCodec.toSheetInput)),
-      );
+    // the body starts at `firstData`, so a spacer row above it is never used
+    const offset = lastIndex + 1;
+
+    this._ensureBlankRows(this.rowNumbers.firstData + offset, data.length);
+
+    // the rows keep their body index, which is what `_writeChangedCells` reads
+    const rows: GasSheetDbCellValue[][] = [];
+    const originalRows = new Map<number, GasSheetDbCellValue[]>();
+
+    data.forEach((row, i) => {
+      rows[offset + i] = row;
+      originalRows.set(offset + i, body[offset + i] ?? []);
+    });
+
+    this._writeChangedCells(rows, originalRows);
   }
 
   /**
@@ -1087,26 +1109,21 @@ class _GasSheetDbTable {
   }
 
   /**
-   * Throw a conflict when a supplied `_id` is already stored or repeats
-   * within `entries`. The stored `_id` column is read once, and only when an
-   * entry supplies an `_id`.
+   * Throw a conflict when a supplied `_id` is already stored in `body` or
+   * repeats within `entries`.
    */
-  private _assertUniqueIds(entries: GasSheetDbEntry[]): void {
+  private _assertUniqueIds(
+    entries: GasSheetDbEntry[],
+    body: GasSheetDbCellValue[][],
+  ): void {
     const ids = entries.flatMap((entry) => (entry._id ? [entry._id] : []));
 
     if (!ids.length) return;
 
     const idColIndex = this._getColumnIndex(_GAS_SHEETDB_SYSTEM_FIELDS.ID);
-    const firstData = this.rowNumbers.firstData;
-    const lastRow = this.sheet.getLastRow();
 
     const taken = new Set<string>(
-      idColIndex === -1 || lastRow < firstData
-        ? []
-        : this.sheet
-            .getRange(firstData, idColIndex + 1, lastRow - firstData + 1, 1)
-            .getValues()
-            .map(([id]) => String(id)),
+      idColIndex === -1 ? [] : body.map((row) => String(row[idColIndex])),
     );
 
     for (const id of ids) {

@@ -10,7 +10,11 @@ const _GasSheetDbValueCodec = (() => {
     JSON: '__JSON__',
   });
 
-  /** Maximum number of characters Sheets stores in a cell. */
+  /**
+   * Maximum number of characters Sheets accepts as the input of a cell. The
+   * limit applies to what is written, so the apostrophe `toSheetInput` adds to
+   * a string counts towards it.
+   */
   const MAX_CELL_LENGTH = 50000;
 
   /**
@@ -52,7 +56,9 @@ const _GasSheetDbValueCodec = (() => {
   /**
    * Describe why a value cannot be stored, or return `undefined` when it can:
    * a `bigint`, `symbol` or `function`, a value that does not serialize to
-   * JSON, or a cell longer than the Sheets limit once encoded.
+   * JSON, or a string whose sheet input, escape included, is longer than the
+   * Sheets cell limit: text and JSON-encoded values hold up to
+   * `MAX_CELL_LENGTH - 1` characters.
    */
   const unsupportedReason = (value: unknown): string | undefined => {
     if (
@@ -71,8 +77,10 @@ const _GasSheetDbValueCodec = (() => {
       return `value cannot be serialized to JSON: ${(err as Error).message}`;
     }
 
-    if (typeof encoded === 'string' && encoded.length > MAX_CELL_LENGTH) {
-      return `value exceeds the ${MAX_CELL_LENGTH} character cell limit (${encoded.length})`;
+    const input = toSheetInput(encoded);
+
+    if (typeof input === 'string' && input.length > MAX_CELL_LENGTH) {
+      return `value exceeds the ${MAX_CELL_LENGTH - 1} character limit for text (${input.length - 1}): the apostrophe that stores it as text counts towards the ${MAX_CELL_LENGTH} character cell limit`;
     }
 
     return undefined;

@@ -9,6 +9,12 @@ export const DELETE_ALL_ROWS_MESSAGE =
 const NEW_SHEET_ROWS = 1000;
 const NEW_SHEET_COLUMNS = 26;
 
+/** Longest input Sheets accepts in a single cell, apostrophe included. */
+const MAX_INPUT_LENGTH = 50000;
+
+/** Message Sheets throws when an input exceeds `MAX_INPUT_LENGTH`. */
+export const CELL_LIMIT_MESSAGE = `Your input contains more than the maximum of ${MAX_INPUT_LENGTH} characters in a single cell.`;
+
 /** Coordinates of a range operation. */
 export interface RangeCall {
   row: number;
@@ -21,6 +27,15 @@ export interface RangeCall {
 interface Cell {
   value: unknown;
   formula: string;
+}
+
+/** An array formula's output: its anchor cell and the rows it fills. */
+interface Spill {
+  row: number;
+  col: number;
+  numRows: number;
+  formula: string;
+  broken: boolean;
 }
 
 /**
@@ -92,8 +107,11 @@ export interface FakeSheetOptions {
  *   `insertColumnsAfter`;
  * - `deleteRows` refuses to remove every non-frozen row;
  * - `setValues` interprets strings as USER_ENTERED does, see
- *   `coerceUserEntered`. `getValues` returns formula cells' values from the
- *   `evaluate` hook and `getFormulas` returns their formulas.
+ *   `coerceUserEntered`, and throws Sheets' own error for a string input
+ *   longer than 50,000 characters, a leading apostrophe included.
+ *   `getValues` returns formula cells' values from the `evaluate` hook and
+ *   `getFormulas` returns their formulas;
+ * - `spill` models an array formula's output, see there.
  */
 export class FakeSheet {
   maxRows = NEW_SHEET_ROWS;
@@ -101,6 +119,9 @@ export class FakeSheet {
   evaluate: FormulaEvaluator;
   frozenRows = 0;
   private grid: (Cell | undefined)[][] = [];
+  private spills: Spill[] = [];
+  /** Anchors (`[row, col]`) of the spills a write has broken. */
+  readonly brokenSpills: [number, number][] = [];
   readonly calls = {
     setValues: [] as RangeCall[],
     clearContent: [] as RangeCall[],
@@ -124,7 +145,10 @@ export class FakeSheet {
   /** Last row with any content, or 0 for an empty sheet. */
   getLastRow = (): number => {
     for (let r = this.grid.length - 1; r >= 0; r--) {
-      if (this.grid[r]?.some((cell) => hasContent(cell))) return r + 1;
+      if (
+        this.grid[r]?.some((cell, c) => this.hasContentAt(r + 1, c + 1, cell))
+      )
+        return r + 1;
     }
     return 0;
   };
@@ -132,9 +156,9 @@ export class FakeSheet {
   /** Last column with any content, or 0 for an empty sheet. */
   getLastColumn = (): number => {
     let last = 0;
-    for (const row of this.grid) {
+    for (const [r, row] of this.grid.entries()) {
       row?.forEach((cell, c) => {
-        if (hasContent(cell)) last = Math.max(last, c + 1);
+        if (this.hasContentAt(r + 1, c + 1, cell)) last = Math.max(last, c + 1);
       });
     }
     return last;
@@ -213,6 +237,75 @@ export class FakeSheet {
 
   getBandings = (): unknown[] => [];
 
+  /** Whether a cell counts as content: its own, or an intact spill's output. */
+  private hasContentAt(row: number, col: number, cell: Cell | undefined) {
+    return (
+      hasContent(cell) ||
+      this.spills.some(
+        (s) =>
+          !s.broken && s.col === col && row >= s.row && row < s.row + s.numRows,
+      )
+    );
+  }
+
+  /**
+   * Places an array formula at `row`, `col` whose output is `values`, one per
+   * row downwards. An open-ended formula such as
+   * `ARRAYFORMULA(IF(LEN(B2:B), ROW(B2:B), ""))` outputs `''` down to the last
+   * row of the sheet, and Sheets counts those cells as content.
+   *
+   * The anchor holds `formula` and shows `values[0]`; the cells below hold
+   * their output without a formula of their own. Every cell counts as content
+   * for `getLastRow`, `getLastColumn` and `getDataRange`, even when its value
+   * is `''`. Writing any value into a spilled cell breaks the spill, as Sheets
+   * does: the other cells clear and the anchor shows `#REF!`, recorded in
+   * `brokenSpills`. A spill does not follow row insertions or deletions.
+   */
+  spill(row: number, col: number, values: unknown[], formula: string): void {
+    this.spills.push({
+      row,
+      col,
+      numRows: values.length,
+      formula,
+      broken: false,
+    });
+    values.forEach((value, i) =>
+      this.writeCell(row + i, col, {
+        value,
+        formula: i === 0 ? formula : '',
+      }),
+    );
+  }
+
+  /** @internal Breaks the spill that holds a cell, ahead of a write to it. */
+  breakSpillAt(row: number, col: number): void {
+    const spill = this.spills.find(
+      (s) =>
+        !s.broken && s.col === col && row >= s.row && row < s.row + s.numRows,
+    );
+    if (!spill) return;
+
+    spill.broken = true;
+    for (let r = spill.row + 1; r < spill.row + spill.numRows; r++) {
+      this.writeCell(r, col, undefined);
+    }
+    this.writeCell(spill.row, col, { value: '#REF!', formula: spill.formula });
+    this.brokenSpills.push([spill.row, col]);
+  }
+
+  /**
+   * @internal Whether a cell shows the value it stores instead of evaluating
+   * its formula: a spill's anchor, and the cells of a spill still intact.
+   */
+  showsStoredValue(row: number, col: number): boolean {
+    return this.spills.some(
+      (s) =>
+        s.col === col &&
+        (row === s.row ||
+          (!s.broken && row > s.row && row < s.row + s.numRows)),
+    );
+  }
+
   /** @internal Reads one cell; `row` and `col` are 1-based and in bounds. */
   readCell(row: number, col: number): Cell {
     return this.grid[row - 1]?.[col - 1] ?? { value: '', formula: '' };
@@ -238,8 +331,10 @@ export class FakeRange {
   ) {}
 
   getValues(): unknown[][] {
-    return this.map((cell) =>
-      cell.formula ? this.sheet.evaluate(cell.formula, this.sheet) : cell.value,
+    return this.map((cell, row, col) =>
+      cell.formula && !this.sheet.showsStoredValue(row, col)
+        ? this.sheet.evaluate(cell.formula, this.sheet)
+        : cell.value,
     );
   }
 
@@ -267,10 +362,21 @@ export class FakeRange {
       }
     }
 
+    for (const rowValues of values) {
+      if (
+        rowValues.some(
+          (v) => typeof v === 'string' && v.length > MAX_INPUT_LENGTH,
+        )
+      ) {
+        throw new Error(CELL_LIMIT_MESSAGE);
+      }
+    }
+
     values.forEach((rowValues, i) =>
-      rowValues.forEach((value, j) =>
-        this.sheet.writeCell(row + i, col + j, coerceUserEntered(value)),
-      ),
+      rowValues.forEach((value, j) => {
+        this.sheet.breakSpillAt(row + i, col + j);
+        this.sheet.writeCell(row + i, col + j, coerceUserEntered(value));
+      }),
     );
     this.sheet.calls.setValues.push(this.coords);
     return this;
@@ -298,11 +404,11 @@ export class FakeRange {
     return { getRange: () => this, setRange: () => undefined };
   }
 
-  private map<T>(read: (cell: Cell) => T): T[][] {
+  private map<T>(read: (cell: Cell, row: number, col: number) => T): T[][] {
     const { row, col, numRows, numCols } = this.coords;
     return Array.from({ length: numRows }, (_, i) =>
       Array.from({ length: numCols }, (_, j) =>
-        read(this.sheet.readCell(row + i, col + j)),
+        read(this.sheet.readCell(row + i, col + j), row + i, col + j),
       ),
     );
   }
