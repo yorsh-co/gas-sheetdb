@@ -187,6 +187,28 @@ describe('find', () => {
     expect(table.findOneWhere(() => false)).toBeNull();
   });
 
+  it('applies find options to findWhere and findOneWhere', () => {
+    const { table, entries } = seeded();
+    table.softDelete(at(entries, 1));
+    const isBob = (e: GasSheetDbEntry) => e.name === 'Bob';
+    const any = () => true;
+
+    expect(table.findWhere(isBob)).toEqual([]);
+    expect(table.findOneWhere(isBob)).toBeNull();
+    expect(names(table.findWhere(any, { withTrashed: true }))).toEqual([
+      'Ann',
+      'Bob',
+      'Cy',
+    ]);
+    expect(names(table.findWhere(any, { onlyTrashed: true }))).toEqual(['Bob']);
+    expect(table.findOneWhere(isBob, { onlyTrashed: true })).toMatchObject({
+      name: 'Bob',
+    });
+    expect(table.findOneWhere(isBob, { withTrashed: true })).toMatchObject({
+      name: 'Bob',
+    });
+  });
+
   it('handles trashed entries through find options and findTrashed', () => {
     const { table, entries } = seeded();
     table.softDelete(at(entries, 1));

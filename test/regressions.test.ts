@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { at, rows, setup, setupTable } from './helpers';
+import { at, rows, setupTable } from './helpers';
 
 describe('1.3.2 regressions', () => {
   describe('deleting every remaining entry', () => {
@@ -83,28 +83,6 @@ describe('1.3.2 regressions', () => {
       table.deleteMany([at(entries, 1), { _id: at(entries, 1)._id! }]);
 
       expect(table.find().map((e) => e.name)).toEqual(['a', 'c']);
-    });
-  });
-
-  describe('default table names', () => {
-    it('returns gsd-table-1 and gsd-table-2 for the second and third unnamed table()', () => {
-      const { db, mocks } = setup();
-
-      const names = [db.table(), db.table(), db.table()].map(
-        (t) => t.sheetName,
-      );
-
-      expect(names).toEqual(['gsd-table-0', 'gsd-table-1', 'gsd-table-2']);
-      expect(
-        mocks.activeSpreadsheet.getSheetByName('gsd-table-2'),
-      ).not.toBeNull();
-    });
-
-    it('does not hang when gsd-table-0 already exists', () => {
-      const { db, mocks } = setup();
-      mocks.activeSpreadsheet.insertSheet('gsd-table-0');
-
-      expect(db.table().sheetName).toBe('gsd-table-1');
     });
   });
 });

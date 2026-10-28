@@ -6,6 +6,9 @@
 
 ### Changed
 
+- **BREAKING:** `sheetName` is required. `table()` throws a configuration `Error` when it is missing or not a non-empty string, and unnamed tables (`gsd-table-N`) are gone. `GasSheetDbTableOptions.sheetName` and the table's `sheetName` are now `string`
+- **BREAKING:** `new GasSheetDb({ useActiveSpreadsheet: false })` with no other spreadsheet source throws instead of silently using the active spreadsheet
+- The default logger no longer prints a literal `undefined` when a log line has no meta
 - **BREAKING:** strings are stored as text, exactly as given, so number-, boolean- and date-looking strings (`'0012'`, `'TRUE'`, `'2024-01-02'`, `'1-2'`) now read back as strings rather than as the number, boolean or `Date` Sheets parsed them into. Consumers that relied on that coercion must pass real numbers, booleans and `Date`s, which are still stored natively
 - **BREAKING:** `find()`, `findWhere()`, `findOneWhere()` and `findTrashed()` no longer take the lock when the sheet needs no repair, and no longer delete trailing blank rows. A read takes the lock only to add missing system columns or backfill rows, then repairs and reads again under it. Code that relied on a read serializing with writers, or on a read trimming the sheet, must be updated
 - **BREAKING:** when no `lockService` is injected, the `GasLock` global is used if it is loaded, otherwise the minimal `LockService` fallback as before. It is looked up at each acquisition, so file load order does not matter. `lockService` on the instance and on tables is never `undefined`: it is the default service, which resolves `GasLock` itself
@@ -21,11 +24,16 @@
 
 ### Added
 
+- `findWhere()` and `findOneWhere()` take the same `GasSheetDbFindOptions` as `find()` and the `*Where` writers (`withTrashed`, `onlyTrashed`); trashed entries stay excluded by default
 - `lockTimeoutMs` option on `GasSheetDb` and `table()` (default `30000`; a table overrides the instance), passed to every `lockService.withLock` call. It must be a positive, finite number
 - Automatic use of [`gas-lock`](https://github.com/yorsh-co/gas-lock) when its `GasLock` global is loaded, with no `lockService` option needed
 - A `conflict` data error, a 409 `CONFLICT`: [`gas-error`](https://github.com/yorsh-co/gas-error)'s `GasConflictError` when loaded, otherwise a `GasSheetDbError`
 - Typed data errors: a missing `_id` throws a 400 `VALIDATION_ERROR` and an unknown `_id` a 404 `NOT_FOUND`. When [`gas-error`](https://github.com/yorsh-co/gas-error) is loaded they are its `GasValidationError` and `GasNotFoundError`, so `GasError.handle` reports them correctly; otherwise they are a `GasSheetDbError` with the same `statusCode`, `code`, `details` and `isOperational` fields. Both are still `instanceof Error`. Configuration errors remain plain `Error`s
 - Vitest test suite with in-memory Apps Script service mocks that model Sheets' value coercion, grid bounds and frozen-row rules
+
+### Removed
+
+- The unused `_runtime` non-persisted field and its internal constant; no code ever set it
 
 ### Fixed
 

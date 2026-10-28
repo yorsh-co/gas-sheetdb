@@ -65,6 +65,29 @@ describe('constructor: spreadsheet source', () => {
     },
   );
 
+  it('throws when useActiveSpreadsheet is false and no other source is passed', () => {
+    const { GasSheetDb, mocks } = setup();
+    mocks.SpreadsheetApp.getActiveSpreadsheet.mockClear();
+
+    expect(() => new GasSheetDb({ useActiveSpreadsheet: false })).toThrow(
+      '[GasSheetDb] "useActiveSpreadsheet" is false, so a spreadsheet source is required.',
+    );
+    expect(mocks.SpreadsheetApp.getActiveSpreadsheet).not.toHaveBeenCalled();
+  });
+
+  it('accepts useActiveSpreadsheet: false alongside another source', () => {
+    const { GasSheetDb, mocks } = setup();
+
+    const db = new GasSheetDb({
+      useActiveSpreadsheet: false,
+      spreadsheetId: 'abc',
+    });
+
+    expect(db.spreadsheet).toBe(
+      mocks.SpreadsheetApp.openById.mock.results[0]?.value,
+    );
+  });
+
   it('throws when there is no active spreadsheet', () => {
     const { GasSheetDb, mocks } = setup();
     mocks.SpreadsheetApp.getActiveSpreadsheet.mockReturnValue(null);
@@ -135,7 +158,10 @@ describe('constructor: lockScope', () => {
     const { db } = setup();
 
     expect(() =>
-      db.table({ lockScope: 'global' as GasSheetDbLockScope }),
+      db.table({
+        sheetName: 'people',
+        lockScope: 'global' as GasSheetDbLockScope,
+      }),
     ).toThrow('Invalid "lockScope": "global"');
   });
 
@@ -175,7 +201,7 @@ describe('constructor: lockTimeoutMs', () => {
   it('rejects an invalid value on table()', () => {
     const { db } = setup();
 
-    expect(() => db.table({ lockTimeoutMs: -5 })).toThrow(
+    expect(() => db.table({ sheetName: 'people', lockTimeoutMs: -5 })).toThrow(
       '[GasSheetDb] Invalid "lockTimeoutMs": -5',
     );
   });
@@ -368,7 +394,10 @@ describe('constructor: logger', () => {
     const { db } = setup();
 
     expect(() =>
-      db.table({ logger: {} as unknown as GasSheetDbLogger }),
+      db.table({
+        sheetName: 'people',
+        logger: {} as unknown as GasSheetDbLogger,
+      }),
     ).toThrow('Invalid "logger"');
   });
 
@@ -457,22 +486,18 @@ describe('table()', () => {
     expect(logger.info).not.toHaveBeenCalled();
   });
 
-  it('names unnamed tables gsd-table-N', () => {
-    const { db, mocks } = setup({ logger: createLogger() });
+  it.each([undefined, '', null, 7])(
+    'rejects a missing or non-string sheetName (%j) without creating a sheet',
+    (sheetName) => {
+      const { db, mocks } = setup({ logger: createLogger() });
+      const sheetsBefore = mocks.activeSpreadsheet.getSheets().length;
 
-    const names = [db.table(), db.table()].map((t) => t.sheetName);
-
-    expect(names).toEqual(['gsd-table-0', 'gsd-table-1']);
-    expect(mocks.activeSpreadsheet.getSheets()).toHaveLength(2);
-  });
-
-  it('skips a default name that is already taken', () => {
-    const { db, mocks } = setup({ logger: createLogger() });
-    mocks.activeSpreadsheet.insertSheet('gsd-table-0');
-    mocks.activeSpreadsheet.insertSheet('gsd-table-1');
-
-    expect(db.table().sheetName).toBe('gsd-table-2');
-  });
+      expect(() =>
+        db.table({ sheetName: sheetName as unknown as string }),
+      ).toThrow('[GasSheetDb] Invalid "sheetName"');
+      expect(mocks.activeSpreadsheet.getSheets()).toHaveLength(sheetsBefore);
+    },
+  );
 });
 
 describe('locking', () => {

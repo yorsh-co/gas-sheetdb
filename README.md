@@ -118,7 +118,7 @@ const sheetDb = new GasSheetDb({ useActiveSpreadsheet: true });
 Use this mode for spreadsheet [container-bound scripts](https://developers.google.com/apps-script/guides/bound).
 
 > [!NOTE]
-> `GasSheetDb` defaults to the active spreadsheet mode if no argument is passed to the class constructor.
+> `GasSheetDb` defaults to the active spreadsheet mode if no spreadsheet source is passed to the class constructor. Passing `useActiveSpreadsheet: false` without `spreadsheet`, `spreadsheetUrl` or `spreadsheetId` throws.
 
 ### Explicit Spreadsheet Mode
 
@@ -399,7 +399,7 @@ const user = usersTable.findOneWhere((user) => user._id === 'abc123');
 ```
 
 > [!NOTE]
-> The `find`, `findWhere` and `findOneWhere` methods exclude soft-deleted entries by default.
+> The `find`, `findWhere` and `findOneWhere` methods exclude soft-deleted entries by default. `findWhere` and `findOneWhere` accept the same `withTrashed` / `onlyTrashed` options as `find` as a second argument.
 
 ### Find Deleted Entries
 
@@ -901,7 +901,7 @@ The resolved spreadsheet is available as sheetDb.spreadsheet.
 ##### Methods
 
 ```js
-GasSheetDb(...).table({ sheetName, rowNumbers, lockScope, lockTimeoutMs, logger });
+GasSheetDb(...).table({ sheetName, rowNumbers, lockScope, lockTimeoutMs, logger }); // `sheetName` is required; the others are optional
 ```
 
 #### Table instance returned by GasSheetDb.table(...)
@@ -913,8 +913,8 @@ find({
   withTrashed: boolean, // optional
   onlyTrashed: boolean, // optional
 }); // hides deleted entries by default
-findWhere(predicateFn); // hides deleted entries by default
-findOneWhere(predicateFn); // hides deleted entries by default
+findWhere(predicateFn, options); // `options` is optional and takes the same flags as `find()`; hides deleted entries by default
+findOneWhere(predicateFn, options); // `options` is optional and takes the same flags as `find()`; hides deleted entries by default
 findTrashed(predicateFn); // `predicateFn` is optional for `findTrashed()`
 ```
 

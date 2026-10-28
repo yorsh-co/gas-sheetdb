@@ -1,9 +1,3 @@
-const _GAS_SHEET_DB_DEFAULT_ROW_NUMBERS: GasSheetDbRowsReference =
-  Object.freeze({
-    columnKeys: 1,
-    firstData: 2,
-  });
-
 /**
  * Entry point for database-like table access in sheets.
  */
@@ -19,7 +13,7 @@ class GasSheetDb {
     this.spreadsheet = this._resolveSpreadsheet(options);
 
     this.rowNumbers = this._resolveRowNumbers(
-      _GAS_SHEET_DB_DEFAULT_ROW_NUMBERS,
+      _GAS_SHEETDB_DEFAULT_ROW_NUMBERS,
       options.rowNumbers,
     );
 
@@ -31,8 +25,8 @@ class GasSheetDb {
 
   /**
    * Resolve the spreadsheet from the provided source option.
-   * Throws if more than on source is passed in options.
-
+   * Throws if more than one source is passed in options, or if
+   * `useActiveSpreadsheet` is false and no other source is passed.
    */
   private _resolveSpreadsheet(
     options: GasSheetDbOptions,
@@ -55,6 +49,12 @@ class GasSheetDb {
     if (selected.length > 1) {
       throw new Error(
         `[GasSheetDb] Received more than one spreadsheet source option: ${selected.join(', ')}. Pass exactly one of "spreadsheet", "spreadsheetUrl", "spreadsheetId" or "useActiveSpreadsheet".`,
+      );
+    }
+
+    if (useActiveSpreadsheet === false && selected.length === 0) {
+      throw new Error(
+        '[GasSheetDb] "useActiveSpreadsheet" is false, so a spreadsheet source is required. Pass "spreadsheet", "spreadsheetUrl" or "spreadsheetId".',
       );
     }
 
@@ -181,16 +181,23 @@ class GasSheetDb {
   }
 
   /**
-   * Create a table wrapper for a sheet.
+   * Create a table wrapper for a sheet, created if it does not exist.
+   * Throws if `sheetName` is not a non-empty string.
    */
-  table(options: GasSheetDbTableOptions = {}): _GasSheetDbTable {
+  table(options: GasSheetDbTableOptions): _GasSheetDbTable {
     const {
-      sheetName = null,
+      sheetName,
       rowNumbers = {},
       lockScope,
       lockTimeoutMs,
       logger,
     } = options;
+
+    if (typeof sheetName !== 'string' || !sheetName) {
+      throw new Error(
+        `[GasSheetDb] Invalid "sheetName": ${String(sheetName)}. Expected a non-empty string.`,
+      );
+    }
 
     return new _GasSheetDbTable({
       spreadsheet: this.spreadsheet,

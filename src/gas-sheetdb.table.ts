@@ -6,7 +6,7 @@
  */
 class _GasSheetDbTable {
   spreadsheet: GoogleAppsScript.Spreadsheet.Spreadsheet;
-  sheetName: string | null;
+  sheetName: string;
   rowNumbers: GasSheetDbRowsReference;
   rowIndexes: GasSheetDbRowsReference;
   sheet: GoogleAppsScript.Spreadsheet.Sheet;
@@ -34,7 +34,7 @@ class _GasSheetDbTable {
 
   constructor({
     spreadsheet,
-    sheetName = null,
+    sheetName,
     rowNumbers,
     lockScope,
     lockService,
@@ -82,16 +82,13 @@ class _GasSheetDbTable {
    * in the meantime.
    */
   private _ensureSheet(): GoogleAppsScript.Spreadsheet.Sheet {
-    if (this.sheetName) {
-      const sheet = this.spreadsheet.getSheetByName(this.sheetName);
+    const sheet = this.spreadsheet.getSheetByName(this.sheetName);
 
-      if (sheet) return sheet;
-    }
+    if (sheet) return sheet;
 
     return this._withLock(
       () =>
-        (this.sheetName && this.spreadsheet.getSheetByName(this.sheetName)) ||
-        this._insertSheet(),
+        this.spreadsheet.getSheetByName(this.sheetName) || this._insertSheet(),
     );
   }
 
@@ -101,24 +98,7 @@ class _GasSheetDbTable {
    * row colors and a frozen header row.
    */
   private _insertSheet(): GoogleAppsScript.Spreadsheet.Sheet {
-    let newSheetName = this.sheetName;
-
-    if (!newSheetName) {
-      const allSheetNames = this.spreadsheet
-        .getSheets()
-        .map((s) => s.getSheetName());
-
-      const defaultSheetName = 'gsd-table-{i}';
-
-      let i = 0;
-      do {
-        newSheetName = defaultSheetName.replace('{i}', String(i++));
-      } while (allSheetNames.includes(newSheetName));
-    }
-
-    this.sheetName = newSheetName;
-
-    const newSheet = this.spreadsheet.insertSheet(newSheetName);
+    const newSheet = this.spreadsheet.insertSheet(this.sheetName);
 
     const maxCols = newSheet.getMaxColumns();
 
@@ -137,7 +117,7 @@ class _GasSheetDbTable {
 
     newSheet.setFrozenRows(this.rowNumbers.columnKeys);
 
-    this._logSink.info('Created table sheet', { sheet: newSheetName });
+    this._logSink.info('Created table sheet', { sheet: this.sheetName });
 
     return newSheet;
   }
@@ -148,7 +128,6 @@ class _GasSheetDbTable {
 
   /**
    * Read all rows as objects.
-   * Adds runtime metadata to each entry.
    *
    * Reads without the lock unless the system columns or any row's metadata
    * need repairing, in which case the repair and the read run under it.
@@ -247,23 +226,27 @@ class _GasSheetDbTable {
   }
 
   /**
-   * Filter entries using a predicate.
+   * Filter entries using a predicate. Trashed entries are excluded by
+   * default; see `GasSheetDbFindOptions`.
    *
    * Returns an empty array when nothing matches.
    */
   findWhere(
-    predicateFn: (entry: GasSheetDbEntry) => boolean,
+    predicateFn: GasSheetDbPredicate,
+    options: GasSheetDbFindOptions = {},
   ): GasSheetDbEntry[] {
-    return this.find().filter(predicateFn);
+    return this.find(options).filter(predicateFn);
   }
 
   /**
-   * Find the first matching entry.
+   * Find the first matching entry. Trashed entries are excluded by default;
+   * see `GasSheetDbFindOptions`.
    */
   findOneWhere(
-    predicateFn: (entry: GasSheetDbEntry) => boolean,
+    predicateFn: GasSheetDbPredicate,
+    options: GasSheetDbFindOptions = {},
   ): GasSheetDbEntry | null {
-    return this.find().find(predicateFn) || null;
+    return this.find(options).find(predicateFn) || null;
   }
 
   /**
@@ -271,7 +254,7 @@ class _GasSheetDbTable {
    * Optionally, filter trashed entries.
    */
   findTrashed(
-    predicateFn: ((entry: GasSheetDbEntry) => boolean) | null = null,
+    predicateFn: GasSheetDbPredicate | null = null,
   ): GasSheetDbEntry[] {
     if (predicateFn) {
       return this.find({ onlyTrashed: true }).filter(predicateFn);
@@ -853,7 +836,7 @@ class _GasSheetDbTable {
    * blank and repeated headers, which are never written.
    */
   private _isPersistedField(key: string): boolean {
-    return key !== '' && !_GAS_SHEETDB_NON_PERSISTED_FIELDS.has(key);
+    return key !== '';
   }
 
   /**
@@ -955,7 +938,7 @@ class _GasSheetDbTable {
   ): GasSheetDbEntry {
     const entry: GasSheetDbEntry = {};
 
-    this.schema?.columnKeys?.forEach((key, colIndex) => {
+    this.schema.columnKeys.forEach((key, colIndex) => {
       if (key === '') return;
 
       const raw = row[colIndex];
@@ -1228,6 +1211,7 @@ class _GasSheetDbTable {
    * operation: called as an operation ends, never while the lock is held.
    */
   private _warnDuplicateColumns(): void {
+    // the schema is not yet assigned when the constructor creates the sheet
     const columns = this.schema?.duplicateKeys;
 
     if (columns?.length) {
