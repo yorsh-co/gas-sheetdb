@@ -8,25 +8,42 @@
 class _GasSheetDbTable {
   constructor({
     spreadsheet,
-    sheetName = null,
+    sheetName,
     rowNumbers,
     lockScope,
     lockService,
+    lockTimeoutMs,
     logger,
   }) {
+    /**
+     * Log lines queued while the lock is held, or null outside `_withLock`.
+     * See `_withLock` for why nothing is logged under the lock.
+     */
+    this._deferredLogs = null;
+    /**
+     * The logger this table and its schema log through: it queues lines while
+     * the lock is held and forwards them to `logger` once it is released.
+     * Keeps the schema unaware of locking.
+     */
+    this._logSink = {
+      info: (msg, meta) => this._log({ level: 'info', msg, meta }),
+      warn: (msg, meta) => this._log({ level: 'warn', msg, meta }),
+    };
     this.spreadsheet = spreadsheet;
     this.sheetName = sheetName;
     this.rowNumbers = rowNumbers; // Base-1 row numbers
     this.rowIndexes = this._deriveRowIndexes(); // Base-0 row indexes
-    this.logger = logger; // assigned before _ensureSheet(), which logs
+    // assigned before _ensureSheet(), which locks and logs
+    this.lockScope = lockScope;
+    this.lockService = lockService;
+    this.lockTimeoutMs = lockTimeoutMs;
+    this.logger = logger;
     this.sheet = this._ensureSheet();
     this.schema = new _GasSheetDbTableSchema(
       this.sheet,
       this.rowNumbers,
-      this.logger,
+      this._logSink,
     );
-    this.lockScope = lockScope;
-    this.lockService = lockService;
   }
   // =========================
   // CONSTRUCTOR HELPERS
@@ -44,14 +61,17 @@ class _GasSheetDbTable {
   }
   /**
    * Ensure the sheet exists, by returning the existing
-   * sheet, or inserting a new one.
+   * sheet, or inserting a new one under the lock. The lookup is repeated
+   * once the lock is held, as another execution may have created the sheet
+   * in the meantime.
    */
   _ensureSheet() {
-    if (this.sheetName) {
-      const sheet = this.spreadsheet.getSheetByName(this.sheetName);
-      if (sheet) return sheet;
-    }
-    return this._insertSheet();
+    const sheet = this.spreadsheet.getSheetByName(this.sheetName);
+    if (sheet) return sheet;
+    return this._withLock(
+      () =>
+        this.spreadsheet.getSheetByName(this.sheetName) || this._insertSheet(),
+    );
   }
   /**
    * Insert a new sheet to the spreadsheet, using the provided
@@ -59,28 +79,21 @@ class _GasSheetDbTable {
    * row colors and a frozen header row.
    */
   _insertSheet() {
-    let newSheetName = this.sheetName;
-    if (!newSheetName) {
-      const allSheetNames = this.spreadsheet
-        .getSheets()
-        .map((s) => s.getSheetName());
-      const defaultSheetName = 'gsd-table-{i}';
-      let i = 0;
-      do {
-        newSheetName = defaultSheetName.replace('{i}', String(i++));
-      } while (allSheetNames.includes(newSheetName));
-    }
-    this.sheetName = newSheetName;
-    const newSheet = this.spreadsheet.insertSheet(newSheetName);
+    const newSheet = this.spreadsheet.insertSheet(this.sheetName);
     const maxCols = newSheet.getMaxColumns();
     newSheet
-      .getRange(this.rowNumbers.columnKeys, 1, newSheet.getMaxRows(), maxCols)
+      .getRange(
+        this.rowNumbers.columnKeys,
+        1,
+        newSheet.getMaxRows() - this.rowNumbers.columnKeys + 1,
+        maxCols,
+      )
       .applyRowBanding();
     newSheet
       .getRange(this.rowNumbers.columnKeys, 1, 1, maxCols)
       .setFontWeight('bold');
     newSheet.setFrozenRows(this.rowNumbers.columnKeys);
-    this.logger.info('Created table sheet', { sheet: newSheetName });
+    this._logSink.info('Created table sheet', { sheet: this.sheetName });
     return newSheet;
   }
   // =========================
@@ -88,10 +101,44 @@ class _GasSheetDbTable {
   // =========================
   /**
    * Read all rows as objects.
-   * Adds runtime metadata to each entry.
+   *
+   * Reads without the lock unless the system columns or any row's metadata
+   * need repairing, in which case the repair and the read run under it.
    */
   find(options = {}) {
-    return this._withLock(() => this._findUnlocked(options));
+    const entries = this._findWithoutLock(options);
+    if (!entries) return this._withLock(() => this._findUnlocked(options));
+    this._warnDuplicateColumns();
+    return entries;
+  }
+  /**
+   * Read all rows as objects without acquiring the lock, or return null when
+   * the sheet needs repairing first (see `_ensureRequiredMetadata`).
+   *
+   * Header and body come from a single `getDataRange()` read, so they are
+   * consistent with each other even while another execution writes. Nothing
+   * is flushed: a read already observes this execution's own writes, and
+   * there is nothing of ours to publish.
+   */
+  _findWithoutLock(options) {
+    const data = this.sheet.getDataRange().getValues();
+    this.schema.setColumnKeys(data[this.rowIndexes.columnKeys] ?? []);
+    if (
+      Object.values(_GAS_SHEETDB_SYSTEM_FIELDS).some(
+        (key) => !this.schema.columnKeys.includes(key),
+      )
+    ) {
+      return null;
+    }
+    const body = data.slice(this.rowIndexes.firstData);
+    const columns = this._getSystemColumnIndexes();
+    if (
+      body.some((row) => this._rowNeedsBackfill(row, columns)) ||
+      this._findDuplicateIdRows(body, columns.id).size
+    ) {
+      return null;
+    }
+    return this._selectEntries(body, options);
   }
   /**
    * Read all rows as objects, without acquiring the lock.
@@ -101,15 +148,21 @@ class _GasSheetDbTable {
    * `_withLock` for why nesting the public methods is not an option.
    */
   _findUnlocked(options = {}) {
-    const { withTrashed = false, onlyTrashed = false } = options;
     this._ensureRequiredMetadata();
-    const data = this._getTableBodyData();
+    return this._selectEntries(this._getTableBodyData(), options);
+  }
+  /**
+   * Decode the rows matching the trashed filters of `options`.
+   */
+  _selectEntries(data, options) {
+    const { withTrashed = false, onlyTrashed = false } = options;
     const isTrashedColIndex = this._getColumnIndex(
       _GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED,
     );
     const rows = [];
     for (let dataIndex = 0; dataIndex < data.length; dataIndex++) {
       const row = data[dataIndex];
+      if (this._isBlankRow(row ?? [])) continue;
       // handle `onlyTrashed = true`
       if (onlyTrashed && !row?.[isTrashedColIndex]) continue;
       // handle `withTrashed = false`
@@ -119,18 +172,20 @@ class _GasSheetDbTable {
     return this._decodeRows(rows);
   }
   /**
-   * Filter entries using a predicate.
+   * Filter entries using a predicate. Trashed entries are excluded by
+   * default; see `GasSheetDbFindOptions`.
    *
    * Returns an empty array when nothing matches.
    */
-  findWhere(predicateFn) {
-    return this.find().filter(predicateFn);
+  findWhere(predicateFn, options = {}) {
+    return this.find(options).filter(predicateFn);
   }
   /**
-   * Find the first matching entry.
+   * Find the first matching entry. Trashed entries are excluded by default;
+   * see `GasSheetDbFindOptions`.
    */
-  findOneWhere(predicateFn) {
-    return this.find().find(predicateFn) || null;
+  findOneWhere(predicateFn, options = {}) {
+    return this.find(options).find(predicateFn) || null;
   }
   /**
    * Find trashed entries.
@@ -154,16 +209,25 @@ class _GasSheetDbTable {
   /**
    * Insert multiple entries.
    * Missing columns are created automatically.
+   *
+   * Throws a conflict, before writing anything or changing any entry, when an
+   * entry's `_id` is already stored or repeats within the batch. Returns an
+   * empty array for an empty batch.
    */
   insertMany(entries) {
+    if (!entries.length) return [];
     return this._withLock(() => {
-      entries.forEach((entry) => this._applyInsertMetadata(entry));
       this.schema.reload();
+      // one read serves the uniqueness check and the append position
+      const body = this._getTableBodyData();
+      this._assertUniqueIds(entries, body);
+      this._assertStorable(entries);
+      entries.forEach((entry) => this._applyInsertMetadata(entry));
       const columnKeys = this._extractKeys(entries);
       this.schema.ensureColumns(columnKeys);
       this.schema.reload();
       const data = entries.map((entry) => this._buildRow(entry));
-      this._appendTableBodyData(data);
+      this._appendTableBodyData(data, body);
       const insertedEntries = this._decodeRows(data);
       return insertedEntries;
     });
@@ -181,41 +245,63 @@ class _GasSheetDbTable {
   /**
    * Update multiple existing entries.
    * Requires `_id` for each entry.
+   *
+   * Every entry is validated before any is changed or written, so a batch
+   * with a missing or unknown `_id` leaves the sheet and the passed objects
+   * untouched. Returns an empty array for an empty batch.
    */
   updateMany(entries) {
+    if (!entries.length) return [];
     return this._withLock(() => this._updateManyUnlocked(entries));
   }
   /**
    * Update multiple existing entries, without acquiring the lock.
    *
+   * `patch` is assigned to every entry once the whole batch is validated.
    * Callers are responsible for holding the lock.
    */
-  _updateManyUnlocked(entries) {
-    // add new property columns
-    this.schema.reload();
-    const columnKeys = this._extractKeys(entries);
-    this.schema.ensureColumns(columnKeys);
+  _updateManyUnlocked(entries, patch = {}) {
     this.schema.reload();
     // load the current data after schema reload
     const data = this._getTableBodyData();
-    // map the row indexes
-    const rowIndexesById = this._mapTableBodyRowIndexesById(data);
-    // gather the updated row indexes so that the entries can be
-    // returned in their post-`_buildRow` state
-    const updatedRowIndexes = [];
-    for (const entry of entries) {
+    // map the row indexes; a sheet without `_id` holds no entry to find
+    const rowIndexesById =
+      this._getColumnIndex(_GAS_SHEETDB_SYSTEM_FIELDS.ID) === -1
+        ? new Map()
+        : this._mapTableBodyRowIndexesById(data);
+    // validate the whole batch before changing anything; the row indexes
+    // also let the entries be returned in their post-`_buildRow` state
+    const updatedRowIndexes = entries.map((entry) => {
       if (!entry._id) {
-        throw new Error('Cannot update entry without "_id"');
+        throw _GasSheetDbErrors.validation(
+          '[GasSheetDb] Cannot update entry without "_id"',
+        );
       }
       const rowIndex = rowIndexesById.get(entry._id);
       if (rowIndex === undefined) {
-        throw new Error(`Entry not found: ${entry._id}`);
+        throw _GasSheetDbErrors.notFound(
+          `[GasSheetDb] Entry not found: ${entry._id}`,
+        );
       }
+      return rowIndex;
+    });
+    this._assertStorable(entries.map((entry) => ({ ...entry, ...patch })));
+    entries.forEach((entry) => {
+      Object.assign(entry, patch);
       this._applyUpdateMetadata(entry);
+    });
+    // add new property columns
+    this.schema.ensureColumns(this._extractKeys(entries));
+    this.schema.reload();
+    // each touched row as read, to find the cells the update changes
+    const originalRows = new Map();
+    entries.forEach((entry, i) => {
+      const rowIndex = updatedRowIndexes[i];
+      if (!originalRows.has(rowIndex))
+        originalRows.set(rowIndex, data[rowIndex]);
       data[rowIndex] = this._buildRow(entry, data[rowIndex]);
-      updatedRowIndexes.push(rowIndex);
-    }
-    this._setTableBodyData(data);
+    });
+    this._writeChangedCells(data, originalRows);
     // return the entries in their post-`_buildRow` state
     return this._decodeRows(
       updatedRowIndexes.map((rowIndex) => data[rowIndex]),
@@ -266,10 +352,17 @@ class _GasSheetDbTable {
   /**
    * Soft delete multiple existing entries.
    * Requires `_id` for each entry.
+   *
+   * Validated as a whole like `updateMany`. Returns an empty array for an
+   * empty batch.
    */
   softDeleteMany(entries) {
-    entries.forEach((e) => (e[_GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED] = true));
-    return this.updateMany(entries);
+    if (!entries.length) return [];
+    return this._withLock(() =>
+      this._updateManyUnlocked(entries, {
+        [_GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED]: true,
+      }),
+    );
   }
   /**
    * Restore a single soft-deleted entry.
@@ -281,10 +374,17 @@ class _GasSheetDbTable {
   /**
    * Restore multiple soft-deleted entries.
    * Requires `_id` for each entry.
+   *
+   * Validated as a whole like `updateMany`. Returns an empty array for an
+   * empty batch.
    */
   restoreMany(entries) {
-    entries.forEach((e) => (e[_GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED] = false));
-    return this.updateMany(entries);
+    if (!entries.length) return [];
+    return this._withLock(() =>
+      this._updateManyUnlocked(entries, {
+        [_GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED]: false,
+      }),
+    );
   }
   /**
    * Soft delete every entry matching a predicate, holding a single lock
@@ -316,7 +416,11 @@ class _GasSheetDbTable {
    * Requires `_id` for each entry.
    */
   deleteMany(entries) {
-    this._withLock(() => this._deleteManyUnlocked(entries));
+    if (!entries.length) return;
+    this._withLock(() => {
+      this.schema.reload();
+      this._deleteManyUnlocked(entries);
+    });
   }
   /**
    * Permanently delete multiple existing entries, without acquiring the lock.
@@ -331,20 +435,43 @@ class _GasSheetDbTable {
     const entriesRowIndexes = [];
     for (const entry of entries) {
       if (!entry._id) {
-        throw new Error('Cannot update entry without "_id"');
+        throw _GasSheetDbErrors.validation(
+          '[GasSheetDb] Cannot delete entry without "_id"',
+        );
       }
       const rowIndex = rowIndexesById.get(entry._id);
       if (rowIndex === undefined) {
-        throw new Error(`Entry not found: ${entry._id}`);
+        throw _GasSheetDbErrors.notFound(
+          `[GasSheetDb] Entry not found: ${entry._id}`,
+        );
       }
       entriesRowIndexes.push(rowIndex);
     }
-    // sort in reverse order to delete from the bottom up, once per row
     const uniqueRowIndexes = [...new Set(entriesRowIndexes)].sort(
-      (a, b) => b - a,
+      (a, b) => a - b,
     );
-    uniqueRowIndexes.forEach((rowIndex) => data.splice(rowIndex, 1));
-    this._setTableBodyData(data);
+    if (!uniqueRowIndexes.length) return;
+    // Sheets refuses to delete every non-frozen row: spare the last one, and
+    // clear its content instead
+    if (
+      this.sheet.getMaxRows() - uniqueRowIndexes.length <=
+      this.sheet.getFrozenRows()
+    ) {
+      this.sheet
+        .getRange(
+          this.rowNumbers.firstData + uniqueRowIndexes.pop(),
+          1,
+          1,
+          this.sheet.getMaxColumns(),
+        )
+        .clearContent();
+    }
+    // delete from the bottom up, so earlier row numbers stay valid
+    this._groupRuns(uniqueRowIndexes)
+      .reverse()
+      .forEach(([start, count]) =>
+        this.sheet.deleteRows(this.rowNumbers.firstData + start, count),
+      );
   }
   /**
    * Permanently delete every entry matching a predicate, holding a single
@@ -379,71 +506,113 @@ class _GasSheetDbTable {
     return data.slice(bodyOffset);
   }
   /**
-   * Write to the entire table body on the sheet.
+   * Write only the cells of `data` that differ from the rows as they were
+   * read, so formulas, array-formula spills and manual edits elsewhere are
+   * left alone.
+   *
+   * Changed cells are grouped into column runs per row; consecutive rows
+   * with the same runs are written together, one `setValues` call per run.
    */
-  _setTableBodyData(data = []) {
-    // deleting every entry leaves nothing to write: clear the old body and
-    // keep its first row, as Sheets refuses to delete all non-frozen rows
-    if (!data.length) {
-      const firstDataRow = this.rowNumbers.firstData;
-      const lastRow = this.sheet.getLastRow();
-      if (lastRow >= firstDataRow) {
+  _writeChangedCells(data, originalRows) {
+    const blocks = [];
+    for (const rowIndex of [...originalRows.keys()].sort((a, b) => a - b)) {
+      const original = originalRows.get(rowIndex);
+      const changed = data[rowIndex].flatMap((value, colIndex) =>
+        this._isSameCell(value, original[colIndex]) ? [] : [colIndex],
+      );
+      if (!changed.length) continue;
+      const runs = this._groupRuns(changed);
+      const last = blocks[blocks.length - 1];
+      if (
+        last &&
+        last.start + last.count === rowIndex &&
+        JSON.stringify(last.runs) === JSON.stringify(runs)
+      ) {
+        last.count++;
+      } else {
+        blocks.push({ start: rowIndex, count: 1, runs });
+      }
+    }
+    for (const { start, count, runs } of blocks) {
+      for (const [colStart, colCount] of runs) {
         this.sheet
           .getRange(
-            firstDataRow,
-            1,
-            lastRow - firstDataRow + 1,
-            this.sheet.getMaxColumns(),
+            this.rowNumbers.firstData + start,
+            colStart + 1,
+            count,
+            colCount,
           )
-          .clearContent();
+          .setValues(
+            data
+              .slice(start, start + count)
+              .map((row) =>
+                row
+                  .slice(colStart, colStart + colCount)
+                  .map(_GasSheetDbValueCodec.toSheetInput),
+              ),
+          );
       }
-      this._removeExtraRows(1);
-      return;
     }
-    if (!data[0]?.length) throw new Error('Empty data');
-    const tableBodyRange = this.sheet.getRange(
-      this.rowNumbers.firstData,
-      1,
-      data.length,
-      data[0].length,
-    );
-    tableBodyRange.setValues(data);
-    this._removeExtraRows(data.length);
   }
   /**
-   * Append rows to the sheet.
+   * Whether two cell values are equal, treating a missing cell as blank and
+   * comparing dates by time.
    */
-  _appendTableBodyData(data) {
-    if (!data.length || !data[0]?.length) throw new Error('Empty data');
-    this._ensureBlankRows(data.length);
-    this.sheet
-      .getRange(this.sheet.getLastRow() + 1, 1, data.length, data[0].length)
-      .setValues(data);
+  _isSameCell(a, b) {
+    if (a instanceof Date && b instanceof Date) {
+      return a.getTime() === b.getTime();
+    }
+    return (a ?? '') === (b ?? '');
   }
   /**
-   * Ensure the sheet has enough empty rows.
+   * Group ascending, unique indexes into contiguous `[start, count]` runs.
    */
-  _ensureBlankRows(amount) {
+  _groupRuns(indexes) {
+    const runs = [];
+    for (const index of indexes) {
+      const run = runs[runs.length - 1];
+      if (run && run[0] + run[1] === index) run[1]++;
+      else runs.push([index, 1]);
+    }
+    return runs;
+  }
+  /**
+   * Append rows after the last non-blank row of the table body, `body` being
+   * the body as read before the append.
+   *
+   * The position comes from the body rather than `getLastRow()`: an
+   * open-ended array formula spills `''` down to the last row of the sheet,
+   * and Sheets counts that as content. Blank rows below the last entry are
+   * reused, and rows are added only when the sheet runs out.
+   *
+   * Only the cells that differ from the target rows are written, so a
+   * spilled or formula cell in a column the entries do not set is left alone.
+   */
+  _appendTableBodyData(data, body) {
+    if (!data.length || !data[0]?.length)
+      throw new Error('[GasSheetDb] Empty data');
+    let lastIndex = body.length - 1;
+    while (lastIndex >= 0 && this._isBlankRow(body[lastIndex])) lastIndex--;
+    // the body starts at `firstData`, so a spacer row above it is never used
+    const offset = lastIndex + 1;
+    this._ensureBlankRows(this.rowNumbers.firstData + offset, data.length);
+    // the rows keep their body index, which is what `_writeChangedCells` reads
+    const rows = [];
+    const originalRows = new Map();
+    data.forEach((row, i) => {
+      rows[offset + i] = row;
+      originalRows.set(offset + i, body[offset + i] ?? []);
+    });
+    this._writeChangedCells(rows, originalRows);
+  }
+  /**
+   * Ensure the sheet has enough empty rows for `amount` rows from `startRow`.
+   */
+  _ensureBlankRows(startRow, amount) {
     const maxRows = this.sheet.getMaxRows();
-    const lastRow = this.sheet.getLastRow();
-    const rowsNeeded = amount + lastRow - maxRows;
+    const rowsNeeded = startRow + amount - 1 - maxRows;
     if (rowsNeeded > 0) {
-      this.sheet.insertRowsAfter(lastRow, rowsNeeded);
-    }
-  }
-  /**
-   * Remove extra rows from the sheet.
-   * Exits early if the table body has no rows to avoid
-   * exception 'it is not possible to delete all non-frozen rows'.
-   */
-  _removeExtraRows(tableBodyLen) {
-    if (!tableBodyLen) return;
-    const lastTableBodyRow = this.rowNumbers.firstData - 1 + tableBodyLen;
-    if (lastTableBodyRow < this.rowNumbers.firstData) return;
-    const maxRows = this.sheet.getMaxRows();
-    const numExtraRows = maxRows - lastTableBodyRow;
-    if (numExtraRows > 0) {
-      this.sheet.deleteRows(lastTableBodyRow + 1, numExtraRows);
+      this.sheet.insertRowsAfter(maxRows, rowsNeeded);
     }
   }
   /**
@@ -454,7 +623,7 @@ class _GasSheetDbTable {
     const idColIndex = this._getColumnIndex(_GAS_SHEETDB_SYSTEM_FIELDS.ID);
     if (idColIndex === -1) {
       throw new Error(
-        `Cannot map rows by "${_GAS_SHEETDB_SYSTEM_FIELDS.ID}": column does not exist on sheet "${this.sheetName}". Call find() at least once before update/delete.`,
+        `[GasSheetDb] Cannot map rows by "${_GAS_SHEETDB_SYSTEM_FIELDS.ID}": column does not exist on sheet "${this.sheetName}". Call find() at least once before update/delete.`,
       );
     }
     const rowMap = new Map();
@@ -488,18 +657,38 @@ class _GasSheetDbTable {
   // TABLE ENTRY HELPERS
   // =========================
   /**
-   * Check if a field should be stored in the sheet.
+   * Check if a field should be stored in the sheet. The empty key stands for
+   * blank and repeated headers, which are never written.
    */
   _isPersistedField(key) {
-    return !_GAS_SHEETDB_NON_PERSISTED_FIELDS.has(key);
+    return key !== '';
+  }
+  /**
+   * Throw a validation error when a persisted field of any entry holds a
+   * value that cannot be stored. Runs before anything is written or changed.
+   */
+  _assertStorable(entries) {
+    for (const entry of entries) {
+      for (const [column, value] of Object.entries(entry)) {
+        if (value === undefined || !this._isPersistedField(column)) continue;
+        const reason = _GasSheetDbValueCodec.unsupportedReason(value);
+        if (reason) {
+          throw _GasSheetDbErrors.validation(
+            `[GasSheetDb] Cannot store column "${column}": ${reason}`,
+            { column, reason },
+          );
+        }
+      }
+    }
   }
   /**
    * Build a sheet row from an entry.
-   * Existing values are preserved when a field is undefined.
+   * Existing values are preserved when a field is undefined, and in columns
+   * without a key.
    */
   _buildRow(entry, existingRow = []) {
     return this.schema.columnKeys.map((key, index) => {
-      const value = entry[key];
+      const value = key === '' ? undefined : entry[key];
       if (value === undefined) {
         return existingRow[index] ?? '';
       }
@@ -537,7 +726,7 @@ class _GasSheetDbTable {
     };
     const entries = rows.map((row) => this._decodeRow(row, onDecodeError));
     if (failedCells) {
-      this.logger.warn('Failed to decode JSON cells', {
+      this._logSink.warn('Failed to decode JSON cells', {
         sheet: this.sheetName,
         cells: failedCells,
         error: firstError?.message ?? String(firstError),
@@ -550,7 +739,8 @@ class _GasSheetDbTable {
    */
   _decodeRow(row, onDecodeError) {
     const entry = {};
-    this.schema?.columnKeys?.forEach((key, colIndex) => {
+    this.schema.columnKeys.forEach((key, colIndex) => {
+      if (key === '') return;
       const raw = row[colIndex];
       entry[key] = _GasSheetDbValueCodec.decode(
         raw === undefined ? '' : raw,
@@ -566,58 +756,124 @@ class _GasSheetDbTable {
    * reading and writing with SheetDB.
    */
   _ensureRequiredMetadata() {
+    this.schema.reload();
     this.schema.ensureColumns(Object.values(_GAS_SHEETDB_SYSTEM_FIELDS));
     this.schema.reload();
     const data = this._getTableBodyData();
     if (!data.length) return;
-    const idColIndex = this._getColumnIndex(_GAS_SHEETDB_SYSTEM_FIELDS.ID);
-    const createdAtColIndex = this._getColumnIndex(
-      _GAS_SHEETDB_SYSTEM_FIELDS.CREATED_AT,
-    );
-    const updatedAtColIndex = this._getColumnIndex(
-      _GAS_SHEETDB_SYSTEM_FIELDS.UPDATED_AT,
-    );
-    const isTrashedColIndex = this._getColumnIndex(
-      _GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED,
-    );
+    const columns = this._getSystemColumnIndexes();
+    const {
+      id: idColIndex,
+      createdAt: createdAtColIndex,
+      updatedAt: updatedAtColIndex,
+      isDeleted: isTrashedColIndex,
+    } = columns;
     const now = new Date();
-    // gates the write below, and is logged as one line rather than one per
-    // row: a table filled by hand or by another process backfills every row
-    // at once
+    const duplicateIdRows = this._findDuplicateIdRows(data, idColIndex);
     let backfilledRows = 0;
-    for (const row of data) {
-      let backfilled = false;
-      if (!row[idColIndex]) {
+    // written and logged as one batch rather than per row: a table filled by
+    // hand or by another process backfills every row at once
+    const originalRows = new Map();
+    for (const [rowIndex, row] of data.entries()) {
+      const needsBackfill = this._rowNeedsBackfill(row, columns);
+      if (!needsBackfill && !duplicateIdRows.has(rowIndex)) continue;
+      originalRows.set(rowIndex, [...row]);
+      if (needsBackfill) backfilledRows++;
+      if (!row[idColIndex] || duplicateIdRows.has(rowIndex)) {
         row[idColIndex] = this._generateId();
-        backfilled = true;
       }
-      if (!row[createdAtColIndex]) {
-        row[createdAtColIndex] = now;
-        backfilled = true;
-      }
-      if (!row[updatedAtColIndex]) {
-        row[updatedAtColIndex] = now;
-        backfilled = true;
-      }
+      if (!row[createdAtColIndex]) row[createdAtColIndex] = now;
+      if (!row[updatedAtColIndex]) row[updatedAtColIndex] = now;
       if (typeof row[isTrashedColIndex] !== 'boolean') {
-        row[isTrashedColIndex] = false;
-        backfilled = true;
+        row[isTrashedColIndex] = Boolean(row[isTrashedColIndex]);
       }
-      if (backfilled) backfilledRows++;
     }
-    if (!backfilledRows) {
-      this._removeExtraRows(data.length);
-      return;
+    if (!originalRows.size) return;
+    this._writeChangedCells(data, originalRows);
+    if (backfilledRows) {
+      this._logSink.info('Backfilled system metadata', {
+        sheet: this.sheetName,
+        rows: backfilledRows,
+      });
     }
-    this._setTableBodyData(data);
-    this.logger.info('Backfilled system metadata', {
-      sheet: this.sheetName,
-      rows: backfilledRows,
-    });
+    if (duplicateIdRows.size) {
+      this._logSink.info('Reassigned duplicate ids', {
+        sheet: this.sheetName,
+        rows: duplicateIdRows.size,
+      });
+    }
   }
   // =========================
   // METADATA HELPERS
   // =========================
+  /**
+   * Return the base-0 column indexes of the system fields, -1 for any that
+   * is not on the sheet.
+   */
+  _getSystemColumnIndexes() {
+    return {
+      id: this._getColumnIndex(_GAS_SHEETDB_SYSTEM_FIELDS.ID),
+      createdAt: this._getColumnIndex(_GAS_SHEETDB_SYSTEM_FIELDS.CREATED_AT),
+      updatedAt: this._getColumnIndex(_GAS_SHEETDB_SYSTEM_FIELDS.UPDATED_AT),
+      isDeleted: this._getColumnIndex(_GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED),
+    };
+  }
+  /**
+   * Whether a row is entirely empty, as when a person cleared its contents.
+   * A row with a formula is blank only while the formula evaluates to ''.
+   */
+  _isBlankRow(row) {
+    return row.every((cell) => cell === '');
+  }
+  /**
+   * Whether a row lacks any system metadata that
+   * `_ensureRequiredMetadata` would backfill. A blank row is not an entry,
+   * so it never does.
+   */
+  _rowNeedsBackfill(row, columns) {
+    return (
+      !this._isBlankRow(row) &&
+      (!row[columns.id] ||
+        !row[columns.createdAt] ||
+        !row[columns.updatedAt] ||
+        typeof row[columns.isDeleted] !== 'boolean')
+    );
+  }
+  /**
+   * Indexes of the rows whose `_id` repeats that of a row above them. The
+   * topmost row keeps the id.
+   */
+  _findDuplicateIdRows(data, idColIndex) {
+    const seen = new Set();
+    const duplicates = new Set();
+    data.forEach((row, rowIndex) => {
+      const id = row[idColIndex];
+      if (!id) return;
+      if (seen.has(id)) duplicates.add(rowIndex);
+      else seen.add(id);
+    });
+    return duplicates;
+  }
+  /**
+   * Throw a conflict when a supplied `_id` is already stored in `body` or
+   * repeats within `entries`.
+   */
+  _assertUniqueIds(entries, body) {
+    const ids = entries.flatMap((entry) => (entry._id ? [entry._id] : []));
+    if (!ids.length) return;
+    const idColIndex = this._getColumnIndex(_GAS_SHEETDB_SYSTEM_FIELDS.ID);
+    const taken = new Set(
+      idColIndex === -1 ? [] : body.map((row) => String(row[idColIndex])),
+    );
+    for (const id of ids) {
+      if (taken.has(String(id))) {
+        throw _GasSheetDbErrors.conflict(
+          `[GasSheetDb] Duplicate "${_GAS_SHEETDB_SYSTEM_FIELDS.ID}": ${id}`,
+        );
+      }
+      taken.add(String(id));
+    }
+  }
   /**
    * Apply system fields for new entries.
    */
@@ -653,23 +909,77 @@ class _GasSheetDbTable {
   // =========================
   /**
    * Execute a callback inside this table's configured lock, via whichever
-   * lockService was injected (or the minimal default fallback).
+   * lockService was injected (or the default: GasLock when loaded, else the
+   * minimal fallback), waiting up to `lockTimeoutMs` for it.
    *
    * The flush runs inside the lock, resyncing Apps Script's
    * local spreadsheet model.
    *
    * Public methods acquire the lock exactly once and must never call one
-   * another: the default lockService is non-reentrant, so a nested call
-   * blocks on a lock this execution already holds until it times out.
-   * Methods that need to read and then write within one lock compose the
-   * private `_*Unlocked` cores instead.
+   * another. Apps Script locks are owned per execution, so a nested acquire
+   * succeeds at once, but with the default lockService its release then
+   * ends the outer critical section early, leaving the rest of the outer
+   * method unprotected. Methods that need to read and then write within one
+   * lock compose the private `_*Unlocked` cores instead.
+   *
+   * Log lines raised by the callback are queued and emitted once the lock is
+   * released, in order, whether or not it threw. A sheet-backed logger takes
+   * the script lock itself, and its release would end this critical section
+   * early.
    */
   _withLock(callback) {
-    return this.lockService.withLock(this.lockScope, () => {
-      SpreadsheetApp.flush();
-      const response = callback();
-      SpreadsheetApp.flush();
-      return response;
-    });
+    const logs = [];
+    this._deferredLogs = logs;
+    try {
+      return this.lockService.withLock(
+        this.lockScope,
+        () => {
+          SpreadsheetApp.flush();
+          const response = callback();
+          SpreadsheetApp.flush();
+          return response;
+        },
+        { timeoutMs: this.lockTimeoutMs },
+      );
+    } finally {
+      this._deferredLogs = null;
+      logs.forEach((log) => this._emit(log));
+      this._warnDuplicateColumns();
+    }
+  }
+  /**
+   * Warn about repeated header names in the last header read, once per
+   * operation: called as an operation ends, never while the lock is held.
+   */
+  _warnDuplicateColumns() {
+    // the schema is not yet assigned when the constructor creates the sheet
+    const columns = this.schema?.duplicateKeys;
+    if (columns?.length) {
+      this._logSink.warn('Duplicate column keys', {
+        sheet: this.sheetName,
+        columns,
+      });
+    }
+  }
+  /**
+   * Queue a log line while the lock is held, else emit it at once.
+   */
+  _log(log) {
+    if (this._deferredLogs) this._deferredLogs.push(log);
+    else this._emit(log);
+  }
+  /**
+   * Forward a log line to the logger. A throwing logger never fails the
+   * operation, which has already run, nor masks its error: the failure is
+   * reported through `console` and the remaining lines are still emitted.
+   */
+  _emit({ level, msg, meta }) {
+    try {
+      this.logger[level](msg, meta);
+    } catch (error) {
+      console.error(`[GasSheetDb] Logger failed to record "${msg}"`, {
+        error: error?.message ?? String(error),
+      });
+    }
   }
 }

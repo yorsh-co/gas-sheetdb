@@ -1,27 +1,24 @@
 'use strict';
-const _GAS_SHEET_DB_DEFAULT_ROW_NUMBERS = Object.freeze({
-  columnKeys: 1,
-  firstData: 2,
-});
 /**
  * Entry point for database-like table access in sheets.
  */
 class GasSheetDb {
   constructor(options = {}) {
     this.spreadsheet = this._resolveSpreadsheet(options);
-    this.rowNumbers = {
-      ..._GAS_SHEET_DB_DEFAULT_ROW_NUMBERS,
-      ...options.rowNumbers,
-    };
+    this.rowNumbers = this._resolveRowNumbers(
+      _GAS_SHEETDB_DEFAULT_ROW_NUMBERS,
+      options.rowNumbers,
+    );
     this.lockScope = this._resolveLockScope(options.lockScope);
-    this.lockService = options.lockService ?? _GAS_SHEETDB_DEFAULT_LOCK_SERVICE;
+    this.lockService = this._resolveLockService(options.lockService);
+    this.lockTimeoutMs = this._resolveLockTimeoutMs(options.lockTimeoutMs);
     this.logger = this._resolveLogger(options.logger);
   }
   /**
-     * Resolve the spreadsheet from the provided source option.
-     * Throws if more than on source is passed in options.
-  
-     */
+   * Resolve the spreadsheet from the provided source option.
+   * Throws if more than one source is passed in options, or if
+   * `useActiveSpreadsheet` is false and no other source is passed.
+   */
   _resolveSpreadsheet(options) {
     const { spreadsheet, spreadsheetUrl, spreadsheetId, useActiveSpreadsheet } =
       options;
@@ -38,6 +35,11 @@ class GasSheetDb {
         `[GasSheetDb] Received more than one spreadsheet source option: ${selected.join(', ')}. Pass exactly one of "spreadsheet", "spreadsheetUrl", "spreadsheetId" or "useActiveSpreadsheet".`,
       );
     }
+    if (useActiveSpreadsheet === false && selected.length === 0) {
+      throw new Error(
+        '[GasSheetDb] "useActiveSpreadsheet" is false, so a spreadsheet source is required. Pass "spreadsheet", "spreadsheetUrl" or "spreadsheetId".',
+      );
+    }
     // return spreadsheet by the indicated method
     if (spreadsheet) return spreadsheet;
     if (spreadsheetUrl) return SpreadsheetApp.openByUrl(spreadsheetUrl);
@@ -52,6 +54,27 @@ class GasSheetDb {
     return activeSpreadsheet;
   }
   /**
+   * Merge a partial row configuration onto `base` and validate the result:
+   * both rows must be positive integers, with the data after the header.
+   * Shared by the constructor and table(), so both reject bad input alike.
+   */
+  _resolveRowNumbers(base, rowNumbers) {
+    const merged = { ...base, ...rowNumbers };
+    for (const key of ['columnKeys', 'firstData']) {
+      if (!Number.isInteger(merged[key]) || merged[key] < 1) {
+        throw new Error(
+          `[GasSheetDb] Invalid "rowNumbers.${key}": ${String(merged[key])}. Expected a positive integer.`,
+        );
+      }
+    }
+    if (merged.firstData <= merged.columnKeys) {
+      throw new Error(
+        `[GasSheetDb] Invalid "rowNumbers": "firstData" (${merged.firstData}) must be greater than "columnKeys" (${merged.columnKeys}).`,
+      );
+    }
+    return merged;
+  }
+  /**
    * Validate a lockScope, falling back to the library default when omitted.
    * Shared by the constructor and table(), so both reject bad input alike.
    */
@@ -63,6 +86,37 @@ class GasSheetDb {
       );
     }
     return lockScope;
+  }
+  /**
+   * Validate a lockService, falling back to the library default when omitted.
+   */
+  _resolveLockService(lockService) {
+    if (lockService === undefined) return _GAS_SHEETDB_DEFAULT_LOCK_SERVICE;
+    if (!lockService || typeof lockService.withLock !== 'function') {
+      throw new Error(
+        '[GasSheetDb] Invalid "lockService": expected an object exposing withLock(scope, callback, options?) — e.g. GasLock. Passing the LockService global from Apps Script rather than GasLock (or a withLock wrapper) is the usual cause.',
+      );
+    }
+    return lockService;
+  }
+  /**
+   * Validate a lock timeout in milliseconds, falling back to the library
+   * default when omitted. Shared by the constructor and table(), so both
+   * reject bad input alike.
+   */
+  _resolveLockTimeoutMs(lockTimeoutMs) {
+    if (lockTimeoutMs === undefined)
+      return _GAS_SHEETDB_DEFAULT_LOCK_TIMEOUT_MS;
+    if (
+      typeof lockTimeoutMs !== 'number' ||
+      !Number.isFinite(lockTimeoutMs) ||
+      lockTimeoutMs <= 0
+    ) {
+      throw new Error(
+        `[GasSheetDb] Invalid "lockTimeoutMs": ${String(lockTimeoutMs)}. Expected a positive, finite number of milliseconds.`,
+      );
+    }
+    return lockTimeoutMs;
   }
   /**
    * Validate a logger, falling back to the library default when omitted.
@@ -82,22 +136,35 @@ class GasSheetDb {
     return logger;
   }
   /**
-   * Create a table wrapper for a sheet.
+   * Create a table wrapper for a sheet, created if it does not exist.
+   * Throws if `sheetName` is not a non-empty string.
    */
-  table(options = {}) {
-    const { sheetName = null, rowNumbers = {}, lockScope, logger } = options;
+  table(options) {
+    const {
+      sheetName,
+      rowNumbers = {},
+      lockScope,
+      lockTimeoutMs,
+      logger,
+    } = options;
+    if (typeof sheetName !== 'string' || !sheetName) {
+      throw new Error(
+        `[GasSheetDb] Invalid "sheetName": ${String(sheetName)}. Expected a non-empty string.`,
+      );
+    }
     return new _GasSheetDbTable({
       spreadsheet: this.spreadsheet,
       sheetName,
-      rowNumbers: {
-        ...this.rowNumbers,
-        ...rowNumbers,
-      },
+      rowNumbers: this._resolveRowNumbers(this.rowNumbers, rowNumbers),
       lockScope:
         lockScope === undefined
           ? this.lockScope
           : this._resolveLockScope(lockScope),
       lockService: this.lockService,
+      lockTimeoutMs:
+        lockTimeoutMs === undefined
+          ? this.lockTimeoutMs
+          : this._resolveLockTimeoutMs(lockTimeoutMs),
       logger: logger === undefined ? this.logger : this._resolveLogger(logger),
     });
   }

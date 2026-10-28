@@ -6,20 +6,33 @@
  */
 declare class _GasSheetDbTable {
   spreadsheet: GoogleAppsScript.Spreadsheet.Spreadsheet;
-  sheetName: string | null;
+  sheetName: string;
   rowNumbers: GasSheetDbRowsReference;
   rowIndexes: GasSheetDbRowsReference;
   sheet: GoogleAppsScript.Spreadsheet.Sheet;
   schema: _GasSheetDbTableSchema;
   lockScope: GasSheetDbLockScope;
   lockService: GasSheetDbLockService;
+  lockTimeoutMs: number;
   logger: GasSheetDbLogger;
+  /**
+   * Log lines queued while the lock is held, or null outside `_withLock`.
+   * See `_withLock` for why nothing is logged under the lock.
+   */
+  private _deferredLogs;
+  /**
+   * The logger this table and its schema log through: it queues lines while
+   * the lock is held and forwards them to `logger` once it is released.
+   * Keeps the schema unaware of locking.
+   */
+  private readonly _logSink;
   constructor({
     spreadsheet,
     sheetName,
     rowNumbers,
     lockScope,
     lockService,
+    lockTimeoutMs,
     logger,
   }: GasSheetDbTableConstructorOptions);
   /**
@@ -29,7 +42,9 @@ declare class _GasSheetDbTable {
   private _deriveRowIndexes;
   /**
    * Ensure the sheet exists, by returning the existing
-   * sheet, or inserting a new one.
+   * sheet, or inserting a new one under the lock. The lookup is repeated
+   * once the lock is held, as another execution may have created the sheet
+   * in the meantime.
    */
   private _ensureSheet;
   /**
@@ -40,9 +55,21 @@ declare class _GasSheetDbTable {
   private _insertSheet;
   /**
    * Read all rows as objects.
-   * Adds runtime metadata to each entry.
+   *
+   * Reads without the lock unless the system columns or any row's metadata
+   * need repairing, in which case the repair and the read run under it.
    */
   find(options?: GasSheetDbFindOptions): GasSheetDbEntry[];
+  /**
+   * Read all rows as objects without acquiring the lock, or return null when
+   * the sheet needs repairing first (see `_ensureRequiredMetadata`).
+   *
+   * Header and body come from a single `getDataRange()` read, so they are
+   * consistent with each other even while another execution writes. Nothing
+   * is flushed: a read already observes this execution's own writes, and
+   * there is nothing of ours to publish.
+   */
+  private _findWithoutLock;
   /**
    * Read all rows as objects, without acquiring the lock.
    *
@@ -52,26 +79,32 @@ declare class _GasSheetDbTable {
    */
   private _findUnlocked;
   /**
-   * Filter entries using a predicate.
+   * Decode the rows matching the trashed filters of `options`.
+   */
+  private _selectEntries;
+  /**
+   * Filter entries using a predicate. Trashed entries are excluded by
+   * default; see `GasSheetDbFindOptions`.
    *
    * Returns an empty array when nothing matches.
    */
   findWhere(
-    predicateFn: (entry: GasSheetDbEntry) => boolean,
+    predicateFn: GasSheetDbPredicate,
+    options?: GasSheetDbFindOptions,
   ): GasSheetDbEntry[];
   /**
-   * Find the first matching entry.
+   * Find the first matching entry. Trashed entries are excluded by default;
+   * see `GasSheetDbFindOptions`.
    */
   findOneWhere(
-    predicateFn: (entry: GasSheetDbEntry) => boolean,
+    predicateFn: GasSheetDbPredicate,
+    options?: GasSheetDbFindOptions,
   ): GasSheetDbEntry | null;
   /**
    * Find trashed entries.
    * Optionally, filter trashed entries.
    */
-  findTrashed(
-    predicateFn?: ((entry: GasSheetDbEntry) => boolean) | null,
-  ): GasSheetDbEntry[];
+  findTrashed(predicateFn?: GasSheetDbPredicate | null): GasSheetDbEntry[];
   /**
    * Insert a single entry.
    */
@@ -79,6 +112,10 @@ declare class _GasSheetDbTable {
   /**
    * Insert multiple entries.
    * Missing columns are created automatically.
+   *
+   * Throws a conflict, before writing anything or changing any entry, when an
+   * entry's `_id` is already stored or repeats within the batch. Returns an
+   * empty array for an empty batch.
    */
   insertMany(entries: GasSheetDbEntry[]): GasSheetDbEntry[];
   /**
@@ -89,11 +126,16 @@ declare class _GasSheetDbTable {
   /**
    * Update multiple existing entries.
    * Requires `_id` for each entry.
+   *
+   * Every entry is validated before any is changed or written, so a batch
+   * with a missing or unknown `_id` leaves the sheet and the passed objects
+   * untouched. Returns an empty array for an empty batch.
    */
   updateMany(entries: GasSheetDbEntry[]): GasSheetDbEntry[];
   /**
    * Update multiple existing entries, without acquiring the lock.
    *
+   * `patch` is assigned to every entry once the whole batch is validated.
    * Callers are responsible for holding the lock.
    */
   private _updateManyUnlocked;
@@ -131,6 +173,9 @@ declare class _GasSheetDbTable {
   /**
    * Soft delete multiple existing entries.
    * Requires `_id` for each entry.
+   *
+   * Validated as a whole like `updateMany`. Returns an empty array for an
+   * empty batch.
    */
   softDeleteMany(entries: GasSheetDbEntry[]): GasSheetDbEntry[];
   /**
@@ -141,6 +186,9 @@ declare class _GasSheetDbTable {
   /**
    * Restore multiple soft-deleted entries.
    * Requires `_id` for each entry.
+   *
+   * Validated as a whole like `updateMany`. Returns an empty array for an
+   * empty batch.
    */
   restoreMany(entries: GasSheetDbEntry[]): GasSheetDbEntry[];
   /**
@@ -190,23 +238,40 @@ declare class _GasSheetDbTable {
    */
   private _getTableBodyData;
   /**
-   * Write to the entire table body on the sheet.
+   * Write only the cells of `data` that differ from the rows as they were
+   * read, so formulas, array-formula spills and manual edits elsewhere are
+   * left alone.
+   *
+   * Changed cells are grouped into column runs per row; consecutive rows
+   * with the same runs are written together, one `setValues` call per run.
    */
-  private _setTableBodyData;
+  private _writeChangedCells;
   /**
-   * Append rows to the sheet.
+   * Whether two cell values are equal, treating a missing cell as blank and
+   * comparing dates by time.
+   */
+  private _isSameCell;
+  /**
+   * Group ascending, unique indexes into contiguous `[start, count]` runs.
+   */
+  private _groupRuns;
+  /**
+   * Append rows after the last non-blank row of the table body, `body` being
+   * the body as read before the append.
+   *
+   * The position comes from the body rather than `getLastRow()`: an
+   * open-ended array formula spills `''` down to the last row of the sheet,
+   * and Sheets counts that as content. Blank rows below the last entry are
+   * reused, and rows are added only when the sheet runs out.
+   *
+   * Only the cells that differ from the target rows are written, so a
+   * spilled or formula cell in a column the entries do not set is left alone.
    */
   private _appendTableBodyData;
   /**
-   * Ensure the sheet has enough empty rows.
+   * Ensure the sheet has enough empty rows for `amount` rows from `startRow`.
    */
   private _ensureBlankRows;
-  /**
-   * Remove extra rows from the sheet.
-   * Exits early if the table body has no rows to avoid
-   * exception 'it is not possible to delete all non-frozen rows'.
-   */
-  private _removeExtraRows;
   /**
    * Map the row indexes
    */
@@ -220,12 +285,19 @@ declare class _GasSheetDbTable {
    */
   private _extractKeys;
   /**
-   * Check if a field should be stored in the sheet.
+   * Check if a field should be stored in the sheet. The empty key stands for
+   * blank and repeated headers, which are never written.
    */
   private _isPersistedField;
   /**
+   * Throw a validation error when a persisted field of any entry holds a
+   * value that cannot be stored. Runs before anything is written or changed.
+   */
+  private _assertStorable;
+  /**
    * Build a sheet row from an entry.
-   * Existing values are preserved when a field is undefined.
+   * Existing values are preserved when a field is undefined, and in columns
+   * without a key.
    */
   private _buildRow;
   /**
@@ -260,6 +332,32 @@ declare class _GasSheetDbTable {
    */
   private _ensureRequiredMetadata;
   /**
+   * Return the base-0 column indexes of the system fields, -1 for any that
+   * is not on the sheet.
+   */
+  private _getSystemColumnIndexes;
+  /**
+   * Whether a row is entirely empty, as when a person cleared its contents.
+   * A row with a formula is blank only while the formula evaluates to ''.
+   */
+  private _isBlankRow;
+  /**
+   * Whether a row lacks any system metadata that
+   * `_ensureRequiredMetadata` would backfill. A blank row is not an entry,
+   * so it never does.
+   */
+  private _rowNeedsBackfill;
+  /**
+   * Indexes of the rows whose `_id` repeats that of a row above them. The
+   * topmost row keeps the id.
+   */
+  private _findDuplicateIdRows;
+  /**
+   * Throw a conflict when a supplied `_id` is already stored in `body` or
+   * repeats within `entries`.
+   */
+  private _assertUniqueIds;
+  /**
    * Apply system fields for new entries.
    */
   private _applyInsertMetadata;
@@ -273,16 +371,38 @@ declare class _GasSheetDbTable {
   private _generateId;
   /**
    * Execute a callback inside this table's configured lock, via whichever
-   * lockService was injected (or the minimal default fallback).
+   * lockService was injected (or the default: GasLock when loaded, else the
+   * minimal fallback), waiting up to `lockTimeoutMs` for it.
    *
    * The flush runs inside the lock, resyncing Apps Script's
    * local spreadsheet model.
    *
    * Public methods acquire the lock exactly once and must never call one
-   * another: the default lockService is non-reentrant, so a nested call
-   * blocks on a lock this execution already holds until it times out.
-   * Methods that need to read and then write within one lock compose the
-   * private `_*Unlocked` cores instead.
+   * another. Apps Script locks are owned per execution, so a nested acquire
+   * succeeds at once, but with the default lockService its release then
+   * ends the outer critical section early, leaving the rest of the outer
+   * method unprotected. Methods that need to read and then write within one
+   * lock compose the private `_*Unlocked` cores instead.
+   *
+   * Log lines raised by the callback are queued and emitted once the lock is
+   * released, in order, whether or not it threw. A sheet-backed logger takes
+   * the script lock itself, and its release would end this critical section
+   * early.
    */
   private _withLock;
+  /**
+   * Warn about repeated header names in the last header read, once per
+   * operation: called as an operation ends, never while the lock is held.
+   */
+  private _warnDuplicateColumns;
+  /**
+   * Queue a log line while the lock is held, else emit it at once.
+   */
+  private _log;
+  /**
+   * Forward a log line to the logger. A throwing logger never fails the
+   * operation, which has already run, nor masks its error: the failure is
+   * reported through `console` and the remaining lines are still emitted.
+   */
+  private _emit;
 }

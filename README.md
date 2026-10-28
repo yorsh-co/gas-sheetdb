@@ -24,15 +24,16 @@ Entries can be queried and updated through a `GasSheetDb` instance using ORM-lik
 - Automatically creates missing columns when new properties appear during inserts or updates
 - Automatically adds `_id`, `_createdAt`, `_updatedAt`, and `_isDeleted` metadata fields to new entries
 - Automatically mutates the metadata properties of entries passed to write operations
-- Returns the full entry object after partial updates
 - Instance-based API — configure spreadsheet source and row numbers per instance, with per-table overrides
-- Objects and arrays are JSON serialized
+- Objects and arrays are JSON serialized; strings are stored as text, exactly as given
+- Cell-scoped writes: only changed cells are written, so formula columns and manual edits are preserved
 - Accepts new entries inserted manually to the spreadsheet
 - Supports both bound and standalone spreadsheets
-- Uses Apps Script `LockService` for safer concurrent writes, with a configurable lock scope per instance or per table (full transactions are not yet supported)
-- Optionally accepts an injected lock service ([`gas-lock`](https://github.com/yorsh-co/gas-lock)) so nested locks across multiple services in one execution reuse a single lock instead of deadlocking
-- Written in TypeScript with generated JavaScript distribution
+- Lock-free reads; writes run under an Apps Script lock with a configurable scope and timeout (`lockScope`, `lockTimeoutMs`) per instance or per table (full transactions are not yet supported)
+- Uses [`gas-lock`](https://github.com/yorsh-co/gas-lock) automatically when it is loaded, or accepts an injected lock service, so nested locks across multiple services in one execution do not end each other early
+- Typed data errors (`400`, `404`, `409`), using [`gas-error`](https://github.com/yorsh-co/gas-error) classes when it is loaded
 - Optionally accepts an injected logger ([`gas-logger`](https://github.com/yorsh-co/gas-logger), `console`, or any `info`/`warn` sink) to route schema and metadata events through your own levels, bindings and sheet sink
+- Written in TypeScript with generated JavaScript distribution
 - No external dependencies beyond built-in Apps Script services
 
 ### Example Usage
@@ -64,12 +65,16 @@ const revoked = usersTable.findWhere((user) => user.access === 'revoked');
 usersTable.softDeleteMany(revoked);
 
 // Restore
-const usersToRestore = usersTable.findTrashed((user) => user.project ===='projectA1');
+const usersToRestore = usersTable.findTrashed(
+  (user) => user.project === 'projectA1',
+);
 
 usersTable.restoreMany(usersToRestore);
 
 // Permanently delete
-const usersToDelete =usersTable.findTrashed((user) => user.project ===='projectB1');
+const usersToDelete = usersTable.findTrashed(
+  (user) => user.project === 'projectB1',
+);
 
 usersTable.deleteMany(usersToDelete);
 ```
@@ -117,7 +122,7 @@ const sheetDb = new GasSheetDb({ useActiveSpreadsheet: true });
 Use this mode for spreadsheet [container-bound scripts](https://developers.google.com/apps-script/guides/bound).
 
 > [!NOTE]
-> `GasSheetDb` defaults to the active spreadsheet mode if no argument is passed to the class constructor.
+> `GasSheetDb` defaults to the active spreadsheet mode if no spreadsheet source is passed to the class constructor. Passing `useActiveSpreadsheet: false` without `spreadsheet`, `spreadsheetUrl` or `spreadsheetId` throws.
 
 ### Explicit Spreadsheet Mode
 
@@ -201,7 +206,8 @@ const sheetDb = new GasSheetDb({
   useActiveSpreadsheet: true, // or spreadsheet / spreadsheetUrl / spreadsheetId
   rowNumbers: { columnKeys: 2, firstData: 3 }, // optionally, set your own row configuration. Defaults to `{ columnKeys: 1, firstData: 2 }`
   lockScope: 'script', // optionally, set the lock scope for writes. Defaults to `'script'`
-  lockService: GasLock, // optionally, configure the instance to use `gas-lock` in the place of the default LockService
+  lockTimeoutMs: 30000, // optionally, set how long to wait for the lock. Defaults to `30000`
+  lockService: GasLock, // optionally, inject a lock service. Defaults to `GasLock` when loaded, else `LockService` directly
 });
 ```
 
@@ -212,6 +218,7 @@ const myTable = sheetDb.table({
   sheetName: 'My Table',
   rowNumbers: { columnKeys: 3, firstData: 4 }, // optionally, set a table-specific row configuration that takes precedence over the `sheetDb` row configuration
   lockScope: 'user', // optionally, override the instance lock scope for this table
+  lockTimeoutMs: 5000, // optionally, override the instance lock timeout for this table
 });
 ```
 
@@ -277,15 +284,17 @@ src/lib/gas-sheetdb/
 > ```json
 > {
 >   "filePushOrder": [
->     "dist/lib/gas-sheetdb/gas-sheetdb.constants.js",
->     "dist/lib/gas-sheetdb/gas-sheetdb.codec.js",
->     "dist/lib/gas-sheetdb/gas-sheetdb.schema.js",
->     "dist/lib/gas-sheetdb/gas-sheetdb.table.js",
->     "dist/lib/gas-sheetdb/gas-sheetdb.class.js",
->     "dist/lib/gas-sheetdb/gas-sheetdb.types.js"
+>     "src/lib/gas-sheetdb/gas-sheetdb.constants.js",
+>     "src/lib/gas-sheetdb/gas-sheetdb.codec.js",
+>     "src/lib/gas-sheetdb/gas-sheetdb.errors.js",
+>     "src/lib/gas-sheetdb/gas-sheetdb.schema.js",
+>     "src/lib/gas-sheetdb/gas-sheetdb.table.js",
+>     "src/lib/gas-sheetdb/gas-sheetdb.class.js"
 >   ]
 > }
 > ```
+>
+> Use the path where the files land in your pushed project, e.g. `src/lib/gas-sheetdb/...` when pushing the subtree as-is. If `.clasp.json` sets a `rootDir` or you push a build output folder, use the paths relative to that folder instead.
 >
 > Alternatively, you can manually move these files to the top of the file list in the Apps Script editor.
 >
@@ -310,6 +319,7 @@ const sheetDb = new GasSheetDb({
   useActiveSpreadsheet: true, // or spreadsheet / spreadsheetUrl / spreadsheetId
   rowNumbers: { columnKeys: 2, firstData: 3 }, // optionally, set your own row configuration. Defaults to `{ columnKeys: 1, firstData: 2 }`
   lockScope: 'script', // optionally, set the lock scope for writes. Defaults to `'script'`
+  lockTimeoutMs: 30000, // optionally, set how long to wait for the lock. Defaults to `30000`
 });
 ```
 
@@ -373,6 +383,9 @@ usersTable.insertMany([
 > [!NOTE]
 > `insert` and `insertMany` mutate the entry objects passed in, adding `_id`, `_createdAt`, `_updatedAt` and `_isDeleted` in place.
 
+> [!IMPORTANT]
+> An `_id` that is already stored, or that appears twice in the batch, throws a `409` `CONFLICT` error before anything is written. An entry returned by `find()` carries its `_id`, so it cannot be inserted again: remove its `_id` and the other system fields to insert a copy, or use `update`. `insertMany([])` returns `[]`.
+
 ### Read All Entries
 
 ```js
@@ -392,7 +405,7 @@ const user = usersTable.findOneWhere((user) => user._id === 'abc123');
 ```
 
 > [!NOTE]
-> The `find`, `findWhere` and `findOneWhere` methods exclude soft-deleted entries by default.
+> The `find`, `findWhere` and `findOneWhere` methods exclude soft-deleted entries by default. `findWhere` and `findOneWhere` accept the same `withTrashed` / `onlyTrashed` options as `find` as a second argument.
 
 ### Find Deleted Entries
 
@@ -401,10 +414,10 @@ const user = usersTable.findOneWhere((user) => user._id === 'abc123');
 const deletedUsers = usersTable.findTrashed();
 
 // optionally filter soft-deleted entries
-const deletedUsers = usersTable.findTrashed((user) => user._id === 'abc123');
+const deletedUser = usersTable.findTrashed((user) => user._id === 'abc123');
 
 // also supported
-const deletedUsers = usersTable.find({ onlyTrashed: true });
+const trashedUsers = usersTable.find({ onlyTrashed: true });
 ```
 
 ### Find Active and Deleted Entries
@@ -460,7 +473,7 @@ const oldUser = usersTable.findOneWhere(
 );
 
 const userRoleConfig = {
-  _id: user._id,
+  _id: oldUser._id,
   role: 'editor',
 };
 
@@ -685,6 +698,14 @@ Entries can be added manually to the sheet table. Metadata will be applied autom
 
 This is useful for importing data directly to the sheet from another source such as a file (.csv, .xlsx etc.) or via copy and paste.
 
+Rows that are entirely empty are not entries: they are skipped and given no metadata. If several rows share an `_id`, the topmost keeps it and the others are assigned a new one.
+
+### Formula columns
+
+Formula columns, including array-formula spills, can be added to a table sheet. Writes only touch the cells whose value changes, so formulas are preserved and manual edits elsewhere are never overwritten. Setting a formula cell to a different value in an entry replaces its formula.
+
+Inserts are appended after the last non-blank row of the table, and write only the cells that differ from the row they land in. To compute a column for every row, anchor one open-ended array formula in the first data row, for example `=ARRAYFORMULA(IF(LEN(B2:B), ROW(B2:B), ""))`: its blank output below the last entry does not count as an entry, and inserts leave it intact. A formula filled per row below the last entry makes those rows non-blank when it returns a value, so they are read as entries and inserts land below them. This is a known limit; use an array formula instead.
+
 ### Encoded Values
 
 `gas-sheetdb` automatically encodes and decodes objects and arrays when storing and reading entries.
@@ -708,21 +729,39 @@ Stored in the sheet as:
 
 Values are automatically decoded when reading rows.
 
+A string that itself starts with `__JSON__` is stored as JSON as well (`__JSON__"__JSON__x"`), so it reads back as the identical string rather than being parsed as an object.
+
+#### Text storage
+
+Strings are always stored as text, exactly as given: `=1+1`, `0012`, `TRUE` and `2024-01-02` are not evaluated or converted, and read back unchanged. Numbers, booleans and `Date`s are stored as native cell values. `gas-sheetdb` never writes formulas; formula columns added in the sheet are preserved (see above).
+
+Nested `Date`s inside objects and arrays are serialized as JSON and read back as ISO strings.
+
+#### Unsupported values
+
+`insert` and `update` throw a `VALIDATION_ERROR` naming the column, with `details` of `{ column, reason }`, before writing anything or changing any passed object, when a value is a `bigint`, `symbol` or `function`, cannot be serialized to JSON, or is a text longer than 49,999 characters. Sheets limits a cell's input to 50,000 characters and the apostrophe that stores a string as text counts towards it, so text and JSON-encoded values (measured including their `__JSON__` prefix) hold at most 49,999 characters.
+
 ### Locking
 
-Every write operation runs inside an Apps Script `LockService` lock. The scope is configurable per instance, and overridable per table:
+Every write operation runs inside an Apps Script lock, and so does creating a missing table sheet. By default the lock is taken through `gas-lock` when it is loaded, else directly through `LockService` (see [The lock service](#the-lock-service)). The scope and the time to wait for the lock are configurable per instance, and overridable per table:
 
 ```js
 const sheetDb = new GasSheetDb({
   useActiveSpreadsheet: true,
   lockScope: 'script', // default
+  lockTimeoutMs: 30000, // default
 });
 
 const auditTable = sheetDb.table({
   sheetName: 'Audit',
   lockScope: 'user', // per-user writes, no cross-user blocking
+  lockTimeoutMs: 5000, // fail fast when the lock is busy
 });
 ```
+
+`lockTimeoutMs` must be a positive, finite number of milliseconds. When the lock cannot be acquired in time, the operation throws.
+
+Reads (`find`, `findWhere`, `findOneWhere`, `findTrashed`) take no lock when the sheet needs no repair. If the system columns are missing or a row lacks its `_id`, `_createdAt`, `_updatedAt` or `_isDeleted`, the read takes the lock, repairs the sheet and reads again under it. Reads never delete rows. The predicate-based writers (`updateWhere`, `updateOneWhere`, `softDeleteWhere`, `deleteWhere`) read under their own lock.
 
 | Scope                | Serializes across                              | Notes                                                                                                                                                      |
 | -------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -731,20 +770,24 @@ const auditTable = sheetDb.table({
 | `user`               | The current user's own concurrent executions   | Does not protect against concurrent writes by different users.                                                                                             |
 
 > [!NOTE]
-> Prior to `2.0.0`, `gas-sheetdb` always used a document lock. Because that scope silently provides no lock at all in a web app execution, the default is now `script`. Set `lockScope: 'document'` explicitly to restore the old behavior.
+> Prior to `1.2.0`, `gas-sheetdb` always used a document lock. Because that scope silently provides no lock at all in a web app execution, the default is now `script`. Set `lockScope: 'document'` explicitly to restore the old behavior.
 
-#### Injecting a lock service
+#### The lock service
 
-`LockService` locks aren't reentrant: if your own code holds a lock and then calls a `gas-sheetdb` write that acquires the same scope, the inner acquire blocks until timeout — nothing in a single-threaded execution can release the outer lock while it waits.
+Apps Script locks are owned per execution, not per handle. Acquiring a scope the execution already holds succeeds immediately — nested acquires do not deadlock — but `releaseLock()` on **any** handle releases the execution's lock, ending the outer critical section early while its code keeps running unprotected.
+
+`gas-sheetdb` therefore uses [`gas-lock`](https://github.com/yorsh-co/gas-lock) whenever the `GasLock` global exists. It tracks which scopes the execution holds, so a nested `withLock` joins the outer lock instead of releasing it. The global is looked up at each acquisition, so load order does not matter.
 
 ```js
-// Deadlocks — the insert() blocks on a 'script' lock this callback holds.
+// With GasLock loaded, no configuration is needed: the insert() joins the
+// outer lock and leaves it held.
 GasLock.withLock('script', () => {
   reportsTable.insert(entry);
+  auditTable.insert(auditEntry); // still protected
 });
 ```
 
-Pass [`gas-lock`](https://github.com/yorsh-co/gas-lock) as `lockService` to fix this. It tracks which scopes the current execution already holds, so nested acquires reuse the outer lock rather than waiting on it:
+Without `GasLock`, `gas-sheetdb` falls back to acquiring `LockService` directly, with no ownership tracking. The same code is then unsafe: the `insert()` releases the lock the outer callback holds, so `auditTable.insert()` runs unprotected. Mixing the two is unsafe as well: if the outer lock is a `GasLock` one but `gas-sheetdb` was given a raw `lockService`, the inner release drops the lock and `GasLock` then throws its lost-lock error after the write. Load `GasLock` so both sides use it, or pass it explicitly:
 
 ```js
 const sheetDb = new GasSheetDb({
@@ -753,7 +796,7 @@ const sheetDb = new GasSheetDb({
 });
 ```
 
-Omit `lockService` and `gas-sheetdb` acquires `LockService` locks directly, with no reentrancy protection — the standalone default, and unchanged behavior for existing callers.
+`lockService` accepts any object exposing `withLock(scope, callback, { timeoutMs })`. An object without it — typically Apps Script's own `LockService` global passed in place of `GasLock` — is rejected when the instance is created.
 
 ### Logging
 
@@ -768,7 +811,7 @@ Omit `lockService` and `gas-sheetdb` acquires `LockService` locks directly, with
 
 Failures `gas-sheetdb` cannot recover from are thrown, not logged, so nothing is ever reported at `error` — an unexpected error reaches your own handler with its stack intact.
 
-By default these go to the execution log via `console`, prefixed with `[GasSheetDb]`.
+By default these go to the execution log via `console`, prefixed with `[GasSheetDb]`. Lines are emitted after the lock is released, never while it is held.
 
 #### Injecting a logger
 
@@ -788,7 +831,7 @@ const sheetDb = new GasSheetDb({
 });
 ```
 
-Plain `console` is accepted too, as is any custom sink of the same shape. An object missing `info` or `warn` is rejected when the instance or table is created, rather than at the first log call.
+Use `gas-logger` `1.2.0` or later: its `lockService` option, and its automatic use of `GasLock` when loaded, stop a buffered flush or sheet creation from ending a caller's own lock section. Plain `console` is accepted too, as is any custom sink of the same shape. An object missing `info` or `warn` is rejected when the instance or table is created, rather than at the first log call.
 
 #### Per-table loggers
 
@@ -811,7 +854,31 @@ Use it to send one sensitive table's events to their own sheet, or to bind per-t
 > **Flushing is yours to do.** `gas-sheetdb` never calls `flush()` — it has no request or execution boundary to flush on. If your logger buffers (`flushThreshold`), flush it yourself in a `finally` block, or list the levels you can't afford to lose under `bypassBufferLevels`.
 
 > [!IMPORTANT]
-> A sheet-backed logger writes to the spreadsheet **from inside the `gas-sheetdb` write lock** — `Added columns`, `Backfilled system metadata` and decode warnings all occur mid-operation. Each unbuffered line is a `SpreadsheetApp` round-trip that other executions wait on. Set `flushThreshold` so those writes batch outside the hot path, or keep `sheetLevel` at `warn`.
+> `gas-sheetdb` never calls the logger while holding its lock. Lines raised mid-operation — `Added columns`, `Backfilled system metadata`, decode warnings, `Created table sheet` — are queued and emitted, in order, once the lock is released, even when the operation throws. A sheet-backed logger such as `gas-logger` takes the script lock itself, and its release would otherwise end the `gas-sheetdb` critical section early. A logger that throws never fails or masks the operation: the failure is reported through `console` and the remaining lines are still emitted.
+
+### Errors
+
+Data errors are thrown with a stable `statusCode` and `code`:
+
+| Cause                                                          | `statusCode` | `code`             |
+| -------------------------------------------------------------- | ------------ | ------------------ |
+| Missing `_id` on `update`, `softDelete`, `restore`, `delete`   | `400`        | `VALIDATION_ERROR` |
+| No entry with the given `_id`                                  | `404`        | `NOT_FOUND`        |
+| `insert` of an `_id` that already exists or repeats in a batch | `409`        | `CONFLICT`         |
+
+When [`gas-error`](https://github.com/yorsh-co/gas-error) is loaded, these are its `GasValidationError`, `GasNotFoundError` and `GasConflictError`, so `GasError.handle` reports them with the right status instead of a generic 500. Otherwise they are a `GasSheetDbError` carrying the same `statusCode`, `code`, `details` and `isOperational` fields.
+
+```js
+try {
+  table.update({ _id: 'missing' });
+} catch (err) {
+  if (err.isOperational) console.warn(err.statusCode, err.code, err.message);
+  else throw err;
+}
+```
+
+> [!NOTE]
+> Configuration and programmer errors (invalid `lockScope`, `lockTimeoutMs`, `lockService` or `logger`, conflicting spreadsheet options, no active spreadsheet) are plain `Error`s, so they are reported as unexpected. Every message starts with `[GasSheetDb]`.
 
 ### Entry Point
 
@@ -829,17 +896,20 @@ new GasSheetDb({
   useActiveSpreadsheet,
   rowNumbers, // optional instance-wide default
   lockScope, // optional, 'script' | 'document' | 'user'. Defaults to 'script'
-  lockService, // optional, e.g. GasLock. Defaults to LockService directly
+  lockTimeoutMs, // optional, milliseconds to wait for the lock. Defaults to 30000
+  lockService, // optional, e.g. GasLock. Defaults to GasLock when loaded, else LockService directly
   logger, // optional, e.g. GasLogger. Defaults to the execution log via console
 });
 ```
 
 The resolved spreadsheet is available as sheetDb.spreadsheet.
 
+`rowNumbers` is validated once a table's override is merged onto the instance's: `columnKeys` and `firstData` must be positive integers, and `firstData` must be greater than `columnKeys`. Rows between the header and `firstData` are never written into.
+
 ##### Methods
 
 ```js
-GasSheetDb(...).table({ sheetName, rowNumbers, lockScope, logger });
+GasSheetDb(...).table({ sheetName, rowNumbers, lockScope, lockTimeoutMs, logger }); // `sheetName` is required; the others are optional
 ```
 
 #### Table instance returned by GasSheetDb.table(...)
@@ -851,8 +921,8 @@ find({
   withTrashed: boolean, // optional
   onlyTrashed: boolean, // optional
 }); // hides deleted entries by default
-findWhere(predicateFn); // hides deleted entries by default
-findOneWhere(predicateFn); // hides deleted entries by default
+findWhere(predicateFn, options); // `options` is optional and takes the same flags as `find()`; hides deleted entries by default
+findOneWhere(predicateFn, options); // `options` is optional and takes the same flags as `find()`; hides deleted entries by default
 findTrashed(predicateFn); // `predicateFn` is optional for `findTrashed()`
 ```
 
@@ -888,7 +958,7 @@ deleteWhere(predicateFn, options);
 ```
 
 > [!NOTE]
-> All write operations mutate the original object [metadata](#metadata) and also return the persisted entry(ies). This keeps the in-memory instance up to date with the persisted state, while also allowing for partial entries to be passed to the write operation methods as long as the original entry `_id` property is included.
+> `insert`, `insertMany`, `update`, `updateMany`, `softDelete`, `softDeleteMany`, `restore` and `restoreMany` mutate the original object [metadata](#metadata) and also return the persisted entry(ies). This keeps the in-memory instance up to date with the persisted state, while also allowing for partial entries to be passed to the update methods as long as the original entry `_id` property is included. `updateWhere`, `updateOneWhere`, `softDeleteWhere` and `deleteWhere` return the matched entries (`updateOneWhere` returns one entry or `null`; `deleteWhere` returns them as they were before deletion). `deleteOne` and `deleteMany` return nothing.
 
 ### Example Workflow
 
@@ -919,15 +989,42 @@ const revoked = usersTable.findWhere((user) => user.access === 'revoked');
 usersTable.softDeleteMany(revoked);
 
 // Restore
-const usersToRestore = usersTable.findTrashed((user) => user.project ===='projectA1');
+const usersToRestore = usersTable.findTrashed(
+  (user) => user.project === 'projectA1',
+);
 
 usersTable.restoreMany(usersToRestore);
 
 // Permanently delete
-const usersToDelete =usersTable.findTrashed((user) => user.project ===='projectB1');
+const usersToDelete = usersTable.findTrashed(
+  (user) => user.project === 'projectB1',
+);
 
 usersTable.deleteMany(usersToDelete);
 ```
+
+### Peer Type Declarations
+
+Consuming gas-* libraries can type-check against `GasSheetDb` without vendoring its source. The canonical declarations live in `peer/gas-sheetdb.peer.types.d.ts`: copy that file into the consuming package (e.g. `src/internal/`) and do not edit the copy.
+
+## Migrating to 2.0.0
+
+Each item below is a breaking change. See the [CHANGELOG](CHANGELOG.md) for the full list of fixes and additions.
+
+- **`sheetName` is required.** `table()` throws without a non-empty string, and unnamed `gsd-table-N` tables are gone. Pass `sheetName` to every `table()` call.
+- **`useActiveSpreadsheet: false` needs a source.** Without `spreadsheet`, `spreadsheetUrl` or `spreadsheetId` the constructor throws instead of using the active spreadsheet. Pass one, or omit the option.
+- **Strings are stored as text.** `'0012'`, `'TRUE'` and `'2024-01-02'` read back as strings, not as the number, boolean or `Date` Sheets would parse. Store real numbers, booleans and `Date`s where you relied on the coercion.
+- **Reads take no lock** unless the sheet needs repair, and no longer trim trailing blank rows. Do not rely on a read serializing with writers; use the [predicate-based writes](#predicate-based-writes) for read-modify-write.
+- **`GasLock` is used when loaded.** With no `lockService` injected, the `GasLock` global is used, else `LockService` directly. Load `gas-lock` so every service in an execution shares one lock registry, or inject `lockService` explicitly.
+- **Error messages carry the `[GasSheetDb]` prefix**, and deleting without an `_id` says `Cannot delete`. Match on `code`, not on message text.
+- **`rowNumbers` is validated** when an instance or table is created: `columnKeys` and `firstData` must be positive integers and `firstData` must be greater than `columnKeys`. Fix configurations that relied on `0`, fractions or `firstData <= columnKeys`.
+- **Empty batches return `[]`.** `insertMany([])` no longer throws `Empty data`; `updateMany`, `softDeleteMany` and `restoreMany` return `[]`, and `deleteMany` returns nothing. Check the batch yourself if you relied on the throw.
+- **Duplicate `_id` on insert throws a `409` `CONFLICT`.** Inserting an entry returned by `find()` now fails. Remove its `_id` and the other system fields to insert a copy, or use `update`:
+
+  ```js
+  const { _id, _createdAt, _updatedAt, _isDeleted, ...copy } = user;
+  usersTable.insert(copy);
+  ```
 
 ## Development
 
