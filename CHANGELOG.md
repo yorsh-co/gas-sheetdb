@@ -2,6 +2,20 @@
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- Lint, TypeScript and Prettier configuration and the test loader come from [`gas-dev-config`](https://github.com/yorsh-co/gas-dev-config)
+- Dependabot groups development dependencies into one weekly pull request
+- `npm run typecheck` also covers `test/` through `tsconfig.test.json`, and type-checks `peer/gas-sheetdb.peer.types.d.ts` standalone; `npm run check` runs the test suite and `gas-dev-config check`
+
+### Added
+
+- Vitest test suite with in-memory Apps Script service mocks that model Sheets' value coercion, grid bounds and frozen-row rules
+
+---
+
 ## [1.3.2] - 2026-10-27
 
 ### Fixed
