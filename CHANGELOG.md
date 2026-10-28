@@ -6,6 +6,7 @@
 
 ### Changed
 
+- **BREAKING:** strings are stored as text, exactly as given, so number-, boolean- and date-looking strings (`'0012'`, `'TRUE'`, `'2024-01-02'`, `'1-2'`) now read back as strings rather than as the number, boolean or `Date` Sheets parsed them into. Consumers that relied on that coercion must pass real numbers, booleans and `Date`s, which are still stored natively
 - **BREAKING:** `find()`, `findWhere()`, `findOneWhere()` and `findTrashed()` no longer take the lock when the sheet needs no repair, and no longer delete trailing blank rows. A read takes the lock only to add missing system columns or backfill rows, then repairs and reads again under it. Code that relied on a read serializing with writers, or on a read trimming the sheet, must be updated
 - **BREAKING:** when no `lockService` is injected, the `GasLock` global is used if it is loaded, otherwise the minimal `LockService` fallback as before. It is looked up at each acquisition, so file load order does not matter. `lockService` on the instance and on tables is never `undefined`: it is the default service, which resolves `GasLock` itself
 - A table sheet that does not exist is now created under the lock, so `table()` can block, or throw when the lock cannot be acquired
@@ -28,6 +29,9 @@
 
 ### Fixed
 
+- Strings written to a sheet were parsed by Sheets as if typed: `=IMPORTXML(...)` or `=HYPERLINK(...)` in user input became a live formula (formula injection), `0012` lost its leading zeros and `TRUE` or `1-2` turned into a boolean or a date. Every string, including JSON-encoded cells, backfilled ids and header keys, is now written as text. Updates still compare logical values, so unchanged string cells are not rewritten
+- A string that starts with `__JSON__` was read back as a parsed object. It is now encoded as JSON and decodes to the identical string; cells already stored read as before
+- A cell longer than 50,000 characters, a `bigint`, a `symbol`, a `function` and a value that does not serialize to JSON throw a 400 `VALIDATION_ERROR` naming the column, with `details` `{ column, reason }`, before anything is written or any passed object is changed. They used to fail inside Sheets, or write a truncated or corrupt cell
 - Fully blank rows inside the data range, such as a row whose contents a person cleared, are no longer entries: reads skip them and the metadata backfill leaves them empty, where they were returned as empty entries and given an `_id`. A row is blank when every cell reads `''`, so a row whose only content is a formula that returns a value is still an entry
 - `table()` and the constructor no longer create a sheet when `rowNumbers.columnKeys` is greater than `1`: row banding ran past the end of the grid and threw `Those rows are out of bounds.`
 - `updateWhere`, `updateOneWhere`, `deleteWhere` and the other writers that repair the sheet before reading no longer append a second set of system columns when the header was edited after the table was created: the cached header is reloaded first
