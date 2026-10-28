@@ -43,7 +43,8 @@ interface GasSheetDbOptions {
 
 /** Options for `GasSheetDb.table()`. */
 interface GasSheetDbTableOptions {
-  sheetName?: string | null;
+  /** Name of the sheet backing the table; created when absent. */
+  sheetName: string;
   rowNumbers?: Partial<GasSheetDbRowsReference>;
   /** Overrides the parent `GasSheetDb` instance's lockScope for this table only. */
   lockScope?: GasSheetDbLockScope;
@@ -56,7 +57,7 @@ interface GasSheetDbTableOptions {
 /** Constructor options for the internal `_GasSheetDbTable` class. */
 interface GasSheetDbTableConstructorOptions {
   spreadsheet: GoogleAppsScript.Spreadsheet.Spreadsheet;
-  sheetName?: string | null;
+  sheetName: string;
   rowNumbers: GasSheetDbRowsReference;
   lockScope: GasSheetDbLockScope;
   lockService: GasSheetDbLockService;

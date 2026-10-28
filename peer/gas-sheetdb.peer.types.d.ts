@@ -125,7 +125,8 @@ interface GasSheetDbOptions {
 
 /** Options for `GasSheetDb.table()`. */
 interface GasSheetDbTableOptions {
-  sheetName?: string | null;
+  /** Name of the sheet backing the table; created when absent. */
+  sheetName: string;
   rowNumbers?: Partial<GasSheetDbRowsReference>;
   /** Overrides the parent `GasSheetDb` instance's lockScope for this table only. */
   lockScope?: GasSheetDbLockScope;
@@ -206,7 +207,7 @@ declare class _GasSheetDbTable {
   private constructor();
 
   spreadsheet: GoogleAppsScript.Spreadsheet.Spreadsheet;
-  sheetName: string | null;
+  sheetName: string;
   /** Base-1 spreadsheet row numbers. */
   rowNumbers: GasSheetDbRowsReference;
   /** Base-0 data array row indexes, derived from `rowNumbers`. */
@@ -220,19 +221,28 @@ declare class _GasSheetDbTable {
 
   /**
    * Read all rows as objects.
-   * Adds runtime metadata to each entry.
    */
   find(options?: GasSheetDbFindOptions): GasSheetDbEntry[];
 
   /**
-   * Filter entries using a predicate.
+   * Filter entries using a predicate. Trashed entries are excluded by
+   * default; see `GasSheetDbFindOptions`.
    *
    * Returns an empty array when nothing matches.
    */
-  findWhere(predicateFn: GasSheetDbPredicate): GasSheetDbEntry[];
+  findWhere(
+    predicateFn: GasSheetDbPredicate,
+    options?: GasSheetDbFindOptions,
+  ): GasSheetDbEntry[];
 
-  /** Find the first matching entry. */
-  findOneWhere(predicateFn: GasSheetDbPredicate): GasSheetDbEntry | null;
+  /**
+   * Find the first matching entry. Trashed entries are excluded by default;
+   * see `GasSheetDbFindOptions`.
+   */
+  findOneWhere(
+    predicateFn: GasSheetDbPredicate,
+    options?: GasSheetDbFindOptions,
+  ): GasSheetDbEntry | null;
 
   /**
    * Find trashed entries.
@@ -365,8 +375,8 @@ declare class GasSheetDb {
 
   /**
    * Create a table wrapper for a sheet. The sheet is created if it does not
-   * exist. `lockScope`, `lockTimeoutMs` and `logger` fall back to this
-   * instance's values.
+   * exist. Throws if `sheetName` is not a non-empty string. `lockScope`,
+   * `lockTimeoutMs` and `logger` fall back to this instance's values.
    */
-  table(options?: GasSheetDbTableOptions): _GasSheetDbTable;
+  table(options: GasSheetDbTableOptions): _GasSheetDbTable;
 }

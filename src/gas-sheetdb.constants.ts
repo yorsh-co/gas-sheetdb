@@ -9,27 +9,36 @@ const _GAS_SHEETDB_SYSTEM_FIELDS = Object.freeze({
 } as const);
 
 /**
- * Runtime-only fields added while reading rows but not persisted in the sheet.
- */
-const _GAS_SHEETDB_NON_PERSISTED_FIELDS: ReadonlySet<string> = new Set([
-  '_runtime',
-]);
-
-/**
  * Used when no `logger` is injected. Deliberately minimal: it writes to the
- * execution log, keeping the `[GasSheetDb]` prefix and appending meta as
- * JSON so a bare console still shows it. It has no levels, no bindings and
- * no sheet sink — inject a GasLogger for those; that logic lives there and
- * only there.
+ * execution log, keeping the `[GasSheetDb]` prefix and passing meta through
+ * as an object when given. It has no levels, no bindings and no sheet sink —
+ * inject a GasLogger for those; that logic lives there and only there.
  */
 const _GAS_SHEETDB_DEFAULT_LOGGER: GasSheetDbLogger = (() => {
+  const write = (
+    log: (...data: unknown[]) => void,
+    msg: string,
+    meta?: Record<string, unknown>,
+  ): void => {
+    if (meta) log(`[GasSheetDb] ${msg}`, meta);
+    else log(`[GasSheetDb] ${msg}`);
+  };
+
   return Object.freeze({
     info: (msg: string, meta?: Record<string, unknown>): void =>
-      console.log(`[GasSheetDb] ${msg}`, meta),
+      write(console.log, msg, meta),
     warn: (msg: string, meta?: Record<string, unknown>): void =>
-      console.warn(`[GasSheetDb] ${msg}`, meta),
+      write(console.warn, msg, meta),
   });
 })();
+
+/** Header and first data row used when `rowNumbers` is not overridden. */
+const _GAS_SHEETDB_DEFAULT_ROW_NUMBERS: GasSheetDbRowsReference = Object.freeze(
+  {
+    columnKeys: 1,
+    firstData: 2,
+  },
+);
 
 /** Scopes accepted by `lockScope`. */
 const _GAS_SHEETDB_LOCK_SCOPES: readonly GasSheetDbLockScope[] = Object.freeze([
