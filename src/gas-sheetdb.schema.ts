@@ -5,7 +5,13 @@ class _GasSheetDbTableSchema {
   sheet: GoogleAppsScript.Spreadsheet.Sheet;
   rowNumbers: GasSheetDbRowsReference;
   logger: GasSheetDbLogger;
-  columnKeys: string[]; // in practice, will be string[]
+  /**
+   * Normalised header keys, one per header cell so indexes match sheet
+   * columns. A blank or repeated header is `''`, which no entry can address.
+   */
+  columnKeys: string[] = [];
+  /** Header names repeated by a later column, from the last header read. */
+  duplicateKeys: string[] = [];
 
   constructor(
     sheet: GoogleAppsScript.Spreadsheet.Sheet,
@@ -16,31 +22,56 @@ class _GasSheetDbTableSchema {
     this.rowNumbers = rowNumbers;
     this.logger = logger;
 
-    this.columnKeys = this.loadColumnKeys();
+    this.reload();
   }
 
   /**
-   * Load column key values from the sheet.
+   * Set the column keys from a raw header row: every cell is read as a
+   * string, blank cells are ignored, and when a name repeats the first
+   * column wins and later ones are ignored like blanks.
+   */
+  setColumnKeys(headerRow: GasSheetDbCellValue[]): void {
+    const seen = new Set<string>();
+    const duplicates = new Set<string>();
+
+    this.columnKeys = headerRow.map((cell) => {
+      const key = String(cell);
+
+      if (!key) return '';
+
+      if (seen.has(key)) {
+        duplicates.add(key);
+        return '';
+      }
+
+      seen.add(key);
+      return key;
+    });
+    this.duplicateKeys = [...duplicates];
+  }
+
+  /**
+   * Load column key values from the sheet, normalised by `setColumnKeys`.
    */
   loadColumnKeys(): string[] {
     const numCols = this.sheet.getLastColumn();
 
-    if (!numCols) {
-      return [];
-    }
+    this.setColumnKeys(
+      numCols
+        ? (this.sheet
+            .getRange(this.rowNumbers.columnKeys, 1, 1, numCols)
+            .getValues()[0] as GasSheetDbCellValue[])
+        : [],
+    );
 
-    const values = this.sheet
-      .getRange(this.rowNumbers.columnKeys, 1, 1, numCols)
-      .getValues();
-
-    return values[0]!;
+    return this.columnKeys;
   }
 
   /**
    * Reload the column key values from the sheet.
    */
   reload(): void {
-    this.columnKeys = this.loadColumnKeys();
+    this.loadColumnKeys();
   }
 
   /**

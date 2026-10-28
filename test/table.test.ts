@@ -712,19 +712,28 @@ describe('logging outside the lock', () => {
   });
 
   it('still emits the lines when the operation throws', () => {
-    const { db, logger, lockedAtLog } = setupProbed();
+    const { db, mocks, logger, lockedAtLog } = setupProbed();
     const table = db.table({ sheetName: 'people' });
     table.insert({ name: 'Ann' });
+    const sheet = sheetOf(mocks.activeSpreadsheet, 'people');
+    sheet
+      .getRange(3, header(sheet).indexOf('name') + 1, 1, 1)
+      .setValues([['Bob']]);
     logger.info.mockClear();
     lockedAtLog.length = 0;
 
-    expect(() => table.update({ _id: 'missing', extra: 1 })).toThrow(
-      '[GasSheetDb] Entry not found: missing',
-    );
+    expect(() =>
+      table.updateWhere(
+        () => true,
+        () => {
+          throw new Error('boom');
+        },
+      ),
+    ).toThrow('boom');
 
-    expect(logger.info).toHaveBeenCalledWith('Added columns', {
+    expect(logger.info).toHaveBeenCalledWith('Backfilled system metadata', {
       sheet: 'people',
-      columns: ['extra'],
+      rows: 1,
     });
     expect(lockedAtLog).toEqual([false]);
   });

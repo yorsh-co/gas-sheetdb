@@ -123,7 +123,12 @@ class _GasSheetDbTable {
     const maxCols = newSheet.getMaxColumns();
 
     newSheet
-      .getRange(this.rowNumbers.columnKeys, 1, newSheet.getMaxRows(), maxCols)
+      .getRange(
+        this.rowNumbers.columnKeys,
+        1,
+        newSheet.getMaxRows() - this.rowNumbers.columnKeys + 1,
+        maxCols,
+      )
       .applyRowBanding();
 
     newSheet
@@ -149,10 +154,13 @@ class _GasSheetDbTable {
    * need repairing, in which case the repair and the read run under it.
    */
   find(options: GasSheetDbFindOptions = {}): GasSheetDbEntry[] {
-    return (
-      this._findWithoutLock(options) ??
-      this._withLock(() => this._findUnlocked(options))
-    );
+    const entries = this._findWithoutLock(options);
+
+    if (!entries) return this._withLock(() => this._findUnlocked(options));
+
+    this._warnDuplicateColumns();
+
+    return entries;
   }
 
   /**
@@ -168,13 +176,11 @@ class _GasSheetDbTable {
     options: GasSheetDbFindOptions,
   ): GasSheetDbEntry[] | null {
     const data = this.sheet.getDataRange().getValues();
-    const columnKeys = (data[this.rowIndexes.columnKeys] ?? []) as string[];
-
-    this.schema.columnKeys = columnKeys;
+    this.schema.setColumnKeys(data[this.rowIndexes.columnKeys] ?? []);
 
     if (
       Object.values(_GAS_SHEETDB_SYSTEM_FIELDS).some(
-        (key) => !columnKeys.includes(key),
+        (key) => !this.schema.columnKeys.includes(key),
       )
     ) {
       return null;
@@ -183,7 +189,12 @@ class _GasSheetDbTable {
     const body = data.slice(this.rowIndexes.firstData);
     const columns = this._getSystemColumnIndexes();
 
-    if (body.some((row) => this._rowNeedsBackfill(row, columns))) return null;
+    if (
+      body.some((row) => this._rowNeedsBackfill(row, columns)) ||
+      this._findDuplicateIdRows(body, columns.id).size
+    ) {
+      return null;
+    }
 
     return this._selectEntries(body, options);
   }
@@ -220,6 +231,8 @@ class _GasSheetDbTable {
 
     for (let dataIndex = 0; dataIndex < data.length; dataIndex++) {
       const row = data[dataIndex];
+
+      if (this._isBlankRow(row ?? [])) continue;
 
       // handle `onlyTrashed = true`
       if (onlyTrashed && !row?.[isTrashedColIndex]) continue;
@@ -281,12 +294,19 @@ class _GasSheetDbTable {
   /**
    * Insert multiple entries.
    * Missing columns are created automatically.
+   *
+   * Throws a conflict, before writing anything or changing any entry, when an
+   * entry's `_id` is already stored or repeats within the batch. Returns an
+   * empty array for an empty batch.
    */
   insertMany(entries: GasSheetDbEntry[]): GasSheetDbEntry[] {
-    return this._withLock(() => {
-      entries.forEach((entry) => this._applyInsertMetadata(entry));
+    if (!entries.length) return [];
 
+    return this._withLock(() => {
       this.schema.reload();
+      this._assertUniqueIds(entries);
+
+      entries.forEach((entry) => this._applyInsertMetadata(entry));
 
       const columnKeys = this._extractKeys(entries);
       this.schema.ensureColumns(columnKeys);
@@ -316,39 +336,41 @@ class _GasSheetDbTable {
   /**
    * Update multiple existing entries.
    * Requires `_id` for each entry.
+   *
+   * Every entry is validated before any is changed or written, so a batch
+   * with a missing or unknown `_id` leaves the sheet and the passed objects
+   * untouched. Returns an empty array for an empty batch.
    */
   updateMany(entries: GasSheetDbEntry[]): GasSheetDbEntry[] {
+    if (!entries.length) return [];
+
     return this._withLock(() => this._updateManyUnlocked(entries));
   }
 
   /**
    * Update multiple existing entries, without acquiring the lock.
    *
+   * `patch` is assigned to every entry once the whole batch is validated.
    * Callers are responsible for holding the lock.
    */
-  private _updateManyUnlocked(entries: GasSheetDbEntry[]): GasSheetDbEntry[] {
-    // add new property columns
-    this.schema.reload();
-
-    const columnKeys = this._extractKeys(entries);
-
-    this.schema.ensureColumns(columnKeys);
+  private _updateManyUnlocked(
+    entries: GasSheetDbEntry[],
+    patch: GasSheetDbEntry = {},
+  ): GasSheetDbEntry[] {
     this.schema.reload();
 
     // load the current data after schema reload
     const data = this._getTableBodyData();
 
-    // map the row indexes
-    const rowIndexesById = this._mapTableBodyRowIndexesById(data);
+    // map the row indexes; a sheet without `_id` holds no entry to find
+    const rowIndexesById =
+      this._getColumnIndex(_GAS_SHEETDB_SYSTEM_FIELDS.ID) === -1
+        ? new Map<string, number>()
+        : this._mapTableBodyRowIndexesById(data);
 
-    // gather the updated row indexes so that the entries can be
-    // returned in their post-`_buildRow` state
-    const updatedRowIndexes = [];
-
-    // each touched row as read, to find the cells the update changes
-    const originalRows = new Map<number, GasSheetDbCellValue[]>();
-
-    for (const entry of entries) {
+    // validate the whole batch before changing anything; the row indexes
+    // also let the entries be returned in their post-`_buildRow` state
+    const updatedRowIndexes = entries.map((entry) => {
       if (!entry._id) {
         throw _GasSheetDbErrors.validation(
           '[GasSheetDb] Cannot update entry without "_id"',
@@ -363,15 +385,29 @@ class _GasSheetDbTable {
         );
       }
 
+      return rowIndex;
+    });
+
+    entries.forEach((entry) => {
+      Object.assign(entry, patch);
       this._applyUpdateMetadata(entry);
+    });
+
+    // add new property columns
+    this.schema.ensureColumns(this._extractKeys(entries));
+    this.schema.reload();
+
+    // each touched row as read, to find the cells the update changes
+    const originalRows = new Map<number, GasSheetDbCellValue[]>();
+
+    entries.forEach((entry, i) => {
+      const rowIndex = updatedRowIndexes[i]!;
 
       if (!originalRows.has(rowIndex))
         originalRows.set(rowIndex, data[rowIndex]!);
 
       data[rowIndex] = this._buildRow(entry, data[rowIndex]);
-
-      updatedRowIndexes.push(rowIndex);
-    }
+    });
 
     this._writeChangedCells(data, originalRows);
 
@@ -442,11 +478,18 @@ class _GasSheetDbTable {
   /**
    * Soft delete multiple existing entries.
    * Requires `_id` for each entry.
+   *
+   * Validated as a whole like `updateMany`. Returns an empty array for an
+   * empty batch.
    */
   softDeleteMany(entries: GasSheetDbEntry[]): GasSheetDbEntry[] {
-    entries.forEach((e) => (e[_GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED] = true));
+    if (!entries.length) return [];
 
-    return this.updateMany(entries);
+    return this._withLock(() =>
+      this._updateManyUnlocked(entries, {
+        [_GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED]: true,
+      }),
+    );
   }
 
   /**
@@ -460,11 +503,18 @@ class _GasSheetDbTable {
   /**
    * Restore multiple soft-deleted entries.
    * Requires `_id` for each entry.
+   *
+   * Validated as a whole like `updateMany`. Returns an empty array for an
+   * empty batch.
    */
   restoreMany(entries: GasSheetDbEntry[]): GasSheetDbEntry[] {
-    entries.forEach((e) => (e[_GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED] = false));
+    if (!entries.length) return [];
 
-    return this.updateMany(entries);
+    return this._withLock(() =>
+      this._updateManyUnlocked(entries, {
+        [_GAS_SHEETDB_SYSTEM_FIELDS.IS_DELETED]: false,
+      }),
+    );
   }
 
   /**
@@ -503,7 +553,12 @@ class _GasSheetDbTable {
    * Requires `_id` for each entry.
    */
   deleteMany(entries: GasSheetDbEntry[]): void {
-    this._withLock(() => this._deleteManyUnlocked(entries));
+    if (!entries.length) return;
+
+    this._withLock(() => {
+      this.schema.reload();
+      this._deleteManyUnlocked(entries);
+    });
   }
 
   /**
@@ -705,25 +760,29 @@ class _GasSheetDbTable {
     if (!data.length || !data[0]?.length)
       throw new Error('[GasSheetDb] Empty data');
 
-    this._ensureBlankRows(data.length);
+    // never into a spacer row between the header and the first data row
+    const startRow = Math.max(
+      this.sheet.getLastRow() + 1,
+      this.rowNumbers.firstData,
+    );
+
+    this._ensureBlankRows(startRow, data.length);
 
     this.sheet
-      .getRange(this.sheet.getLastRow() + 1, 1, data.length, data[0].length)
+      .getRange(startRow, 1, data.length, data[0].length)
       .setValues(data);
   }
 
   /**
-   * Ensure the sheet has enough empty rows.
+   * Ensure the sheet has enough empty rows for `amount` rows from `startRow`.
    */
-  private _ensureBlankRows(amount: number): void {
+  private _ensureBlankRows(startRow: number, amount: number): void {
     const maxRows = this.sheet.getMaxRows();
 
-    const lastRow = this.sheet.getLastRow();
-
-    const rowsNeeded = amount + lastRow - maxRows;
+    const rowsNeeded = startRow + amount - 1 - maxRows;
 
     if (rowsNeeded > 0) {
-      this.sheet.insertRowsAfter(lastRow, rowsNeeded);
+      this.sheet.insertRowsAfter(maxRows, rowsNeeded);
     }
   }
 
@@ -781,22 +840,24 @@ class _GasSheetDbTable {
   // =========================
 
   /**
-   * Check if a field should be stored in the sheet.
+   * Check if a field should be stored in the sheet. The empty key stands for
+   * blank and repeated headers, which are never written.
    */
   private _isPersistedField(key: string): boolean {
-    return !_GAS_SHEETDB_NON_PERSISTED_FIELDS.has(key);
+    return key !== '' && !_GAS_SHEETDB_NON_PERSISTED_FIELDS.has(key);
   }
 
   /**
    * Build a sheet row from an entry.
-   * Existing values are preserved when a field is undefined.
+   * Existing values are preserved when a field is undefined, and in columns
+   * without a key.
    */
   private _buildRow(
     entry: GasSheetDbEntry,
     existingRow: GasSheetDbCellValue[] = [],
   ) {
     return this.schema.columnKeys.map((key, index) => {
-      const value = entry[key];
+      const value = key === '' ? undefined : entry[key];
 
       if (value === undefined) {
         return existingRow[index] ?? '';
@@ -865,6 +926,8 @@ class _GasSheetDbTable {
     const entry: GasSheetDbEntry = {};
 
     this.schema?.columnKeys?.forEach((key, colIndex) => {
+      if (key === '') return;
+
       const raw = row[colIndex];
       entry[key] = _GasSheetDbValueCodec.decode(
         raw === undefined ? '' : raw,
@@ -882,6 +945,7 @@ class _GasSheetDbTable {
    * reading and writing with SheetDB.
    */
   private _ensureRequiredMetadata(): void {
+    this.schema.reload();
     this.schema.ensureColumns(Object.values(_GAS_SHEETDB_SYSTEM_FIELDS));
     this.schema.reload();
 
@@ -898,21 +962,29 @@ class _GasSheetDbTable {
     } = columns;
 
     const now = new Date();
+    const duplicateIdRows = this._findDuplicateIdRows(data, idColIndex);
+    let backfilledRows = 0;
 
     // written and logged as one batch rather than per row: a table filled by
     // hand or by another process backfills every row at once
     const originalRows = new Map<number, GasSheetDbCellValue[]>();
 
     for (const [rowIndex, row] of data.entries()) {
-      if (!this._rowNeedsBackfill(row, columns)) continue;
+      const needsBackfill = this._rowNeedsBackfill(row, columns);
+
+      if (!needsBackfill && !duplicateIdRows.has(rowIndex)) continue;
 
       originalRows.set(rowIndex, [...row]);
 
-      if (!row[idColIndex]) row[idColIndex] = this._generateId();
+      if (needsBackfill) backfilledRows++;
+
+      if (!row[idColIndex] || duplicateIdRows.has(rowIndex)) {
+        row[idColIndex] = this._generateId();
+      }
       if (!row[createdAtColIndex]) row[createdAtColIndex] = now;
       if (!row[updatedAtColIndex]) row[updatedAtColIndex] = now;
       if (typeof row[isTrashedColIndex] !== 'boolean') {
-        row[isTrashedColIndex] = false;
+        row[isTrashedColIndex] = Boolean(row[isTrashedColIndex]);
       }
     }
 
@@ -920,10 +992,19 @@ class _GasSheetDbTable {
 
     this._writeChangedCells(data, originalRows);
 
-    this._logSink.info('Backfilled system metadata', {
-      sheet: this.sheetName,
-      rows: originalRows.size,
-    });
+    if (backfilledRows) {
+      this._logSink.info('Backfilled system metadata', {
+        sheet: this.sheetName,
+        rows: backfilledRows,
+      });
+    }
+
+    if (duplicateIdRows.size) {
+      this._logSink.info('Reassigned duplicate ids', {
+        sheet: this.sheetName,
+        rows: duplicateIdRows.size,
+      });
+    }
   }
 
   // =========================
@@ -944,19 +1025,86 @@ class _GasSheetDbTable {
   }
 
   /**
+   * Whether a row is entirely empty, as when a person cleared its contents.
+   * A row with a formula is blank only while the formula evaluates to ''.
+   */
+  private _isBlankRow(row: GasSheetDbCellValue[]): boolean {
+    return row.every((cell) => cell === '');
+  }
+
+  /**
    * Whether a row lacks any system metadata that
-   * `_ensureRequiredMetadata` would backfill.
+   * `_ensureRequiredMetadata` would backfill. A blank row is not an entry,
+   * so it never does.
    */
   private _rowNeedsBackfill(
     row: GasSheetDbCellValue[],
     columns: _GasSheetDbSystemColumnIndexes,
   ): boolean {
     return (
-      !row[columns.id] ||
-      !row[columns.createdAt] ||
-      !row[columns.updatedAt] ||
-      typeof row[columns.isDeleted] !== 'boolean'
+      !this._isBlankRow(row) &&
+      (!row[columns.id] ||
+        !row[columns.createdAt] ||
+        !row[columns.updatedAt] ||
+        typeof row[columns.isDeleted] !== 'boolean')
     );
+  }
+
+  /**
+   * Indexes of the rows whose `_id` repeats that of a row above them. The
+   * topmost row keeps the id.
+   */
+  private _findDuplicateIdRows(
+    data: GasSheetDbCellValue[][],
+    idColIndex: number,
+  ): Set<number> {
+    const seen = new Set<GasSheetDbCellValue>();
+    const duplicates = new Set<number>();
+
+    data.forEach((row, rowIndex) => {
+      const id = row[idColIndex];
+
+      if (!id) return;
+
+      if (seen.has(id)) duplicates.add(rowIndex);
+      else seen.add(id);
+    });
+
+    return duplicates;
+  }
+
+  /**
+   * Throw a conflict when a supplied `_id` is already stored or repeats
+   * within `entries`. The stored `_id` column is read once, and only when an
+   * entry supplies an `_id`.
+   */
+  private _assertUniqueIds(entries: GasSheetDbEntry[]): void {
+    const ids = entries.flatMap((entry) => (entry._id ? [entry._id] : []));
+
+    if (!ids.length) return;
+
+    const idColIndex = this._getColumnIndex(_GAS_SHEETDB_SYSTEM_FIELDS.ID);
+    const firstData = this.rowNumbers.firstData;
+    const lastRow = this.sheet.getLastRow();
+
+    const taken = new Set<string>(
+      idColIndex === -1 || lastRow < firstData
+        ? []
+        : this.sheet
+            .getRange(firstData, idColIndex + 1, lastRow - firstData + 1, 1)
+            .getValues()
+            .map(([id]) => String(id)),
+    );
+
+    for (const id of ids) {
+      if (taken.has(String(id))) {
+        throw _GasSheetDbErrors.conflict(
+          `[GasSheetDb] Duplicate "${_GAS_SHEETDB_SYSTEM_FIELDS.ID}": ${id}`,
+        );
+      }
+
+      taken.add(String(id));
+    }
   }
 
   /**
@@ -1041,6 +1189,22 @@ class _GasSheetDbTable {
     } finally {
       this._deferredLogs = null;
       logs.forEach((log) => this._emit(log));
+      this._warnDuplicateColumns();
+    }
+  }
+
+  /**
+   * Warn about repeated header names in the last header read, once per
+   * operation: called as an operation ends, never while the lock is held.
+   */
+  private _warnDuplicateColumns(): void {
+    const columns = this.schema?.duplicateKeys;
+
+    if (columns?.length) {
+      this._logSink.warn('Duplicate column keys', {
+        sheet: this.sheetName,
+        columns,
+      });
     }
   }
 
