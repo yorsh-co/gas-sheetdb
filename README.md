@@ -689,6 +689,10 @@ Entries can be added manually to the sheet table. Metadata will be applied autom
 
 This is useful for importing data directly to the sheet from another source such as a file (.csv, .xlsx etc.) or via copy and paste.
 
+### Formula columns
+
+Formula columns, including array-formula spills, can be added to a table sheet. Writes only touch the cells whose value changes, so formulas are preserved and manual edits elsewhere are never overwritten. Setting a formula cell to a different value in an entry replaces its formula.
+
 ### Encoded Values
 
 `gas-sheetdb` automatically encodes and decodes objects and arrays when storing and reading entries.
