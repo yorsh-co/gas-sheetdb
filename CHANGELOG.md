@@ -2,6 +2,14 @@
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- README: install with gas-dev-bundle when using several gas-\* libraries, alongside git subtree
+
+---
+
 ## [2.1.0] - 2026-10-30
 
 ### Added
