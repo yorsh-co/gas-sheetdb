@@ -169,6 +169,8 @@ const sheetDb = new GasSheetDb({
 > [!TIP]
 > It is recommended to use `gas-sheetdb` together with [Google's `clasp` CLI](https://github.com/google/clasp) for local Apps Script development and git-based workflows. See [Setup instructions with `clasp`](#setup-instructions-with-clasp) for more information.
 
+<a id="add-the-library"></a>
+
 #### 1. Add the library to your Apps Script project
 
 ##### Several gas-\* libraries: gas-dev-bundle
@@ -233,7 +235,7 @@ See the [Scopes](#scopes) section above.
 
 This is required for declaring a `GasSheetDb` instance at runtime, as a global variable or inside an IIFE.
 
-See the [Configure the file push order](#6-configure-the-file-push-order) section for details.
+See the [Configure the file push order](#file-push-order) section for details.
 
 With gas-dev-bundle, the single entry is the bundle file, e.g. `src/lib/gas-libraries.js` (adjusted for `rootDir`).
 
@@ -294,7 +296,7 @@ clasp create --type sheets
 
 #### 5. Import `gas-sheetdb`
 
-To install several gas-\* libraries together, use the [gas-dev-bundle method](#1-add-the-library-to-your-apps-script-project) from the Quick Start; otherwise, add this library with git subtree:
+To install several gas-\* libraries together, use the [gas-dev-bundle method](#add-the-library) from the Quick Start; otherwise, add this library with git subtree:
 
 ```bash
 git subtree add \
@@ -309,6 +311,8 @@ This creates:
 ```txt
 src/lib/gas-sheetdb/
 ```
+
+<a id="file-push-order"></a>
 
 #### 6. Configure the file push order
 

@@ -2,6 +2,14 @@
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- README: cross-references use anchors that survive renumbering the steps
+
+---
+
 ## [2.1.1] - 2026-10-30
 
 ### Changed
