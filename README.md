@@ -284,9 +284,9 @@ src/lib/gas-sheetdb/
 > ```json
 > {
 >   "filePushOrder": [
+>     "src/lib/gas-sheetdb/gas-sheetdb.errors.js",
 >     "src/lib/gas-sheetdb/gas-sheetdb.constants.js",
 >     "src/lib/gas-sheetdb/gas-sheetdb.codec.js",
->     "src/lib/gas-sheetdb/gas-sheetdb.errors.js",
 >     "src/lib/gas-sheetdb/gas-sheetdb.schema.js",
 >     "src/lib/gas-sheetdb/gas-sheetdb.table.js",
 >     "src/lib/gas-sheetdb/gas-sheetdb.class.js"
@@ -1031,6 +1031,13 @@ Each item below is a breaking change. See the [CHANGELOG](CHANGELOG.md) for the 
 The source code is written in TypeScript.
 
 Release builds are compiled to JavaScript before publishing so the distributed library remains compatible with Google Apps Script.
+
+### Apps Script tests
+
+The Vitest suite runs against in-memory fakes of `SpreadsheetApp`, `LockService` and `Utilities`. `gas-test/gas-sheetdb.ts` checks the platform behaviour they stand in for in a real Apps Script execution: text storage through the apostrophe escape, the cell limit, nested locks with [GasLock](https://github.com/yorsh-co/gas-lock) and raw `LockService`, deleting every entry under frozen rows, and formula and `ARRAYFORMULA` columns. They are built and run with [gas-dev-config](https://github.com/yorsh-co/gas-dev-config#apps-script-tests)'s `gas-test`; see its README for the one-off setup.
+
+- `npm run test:gas:build` writes a single script, with gas-lock and [gas-error](https://github.com/yorsh-co/gas-error) bundled in; paste it into the Apps Script editor and run `runGasTests`.
+- `npm run test:gas` pushes it to a dedicated test project with clasp and prints the results. It needs `clasp login`, `GAS_TEST_SCRIPT_ID` and `GAS_TEST_SPREADSHEET_ID`; the project's contents are replaced, and the test sheets are deleted from the spreadsheet after the run.
 
 ## Planned features
 

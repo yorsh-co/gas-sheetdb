@@ -306,7 +306,7 @@ describe('default lock service', () => {
     try {
       const mocks = createMocks();
       const load = createGasLoader<{ GasSheetDb: typeof GasSheetDb }>({
-        files: [...SOURCE_FILES.map((f) => `src/${f}`), trailing],
+        files: [...SOURCE_FILES, trailing],
         exports: ['GasSheetDb'],
         root: ROOT,
       });
