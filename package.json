@@ -1,11 +1,25 @@
 {
   "name": "gas-sheetdb",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Database-like storage layer for Google Apps Script projects.",
   "license": "MIT",
   "author": "Joshua Porter",
   "repository": {
     "type": "git",
     "url": "https://github.com/yorsh-co/gas-sheetdb"
+  },
+  "gasLibrary": {
+    "loadOrder": [
+      "gas-sheetdb.errors.js",
+      "gas-sheetdb.constants.js",
+      "gas-sheetdb.codec.js",
+      "gas-sheetdb.schema.js",
+      "gas-sheetdb.table.js",
+      "gas-sheetdb.class.js"
+    ],
+    "peers": {
+      "gas-lock": "^1.1.0",
+      "gas-error": "^1.1.0"
+    }
   }
 }

@@ -2,6 +2,21 @@
 
 ---
 
+## [2.1.0] - 2026-10-30
+
+### Added
+
+- Apps Script tests in `gas-test/`, ported from the former standalone smoke test and run with gas-dev-config's `gas-test` (`npm run test:gas:build`, `npm run test:gas`)
+- The release `package.json` carries `gasLibrary` load-order metadata for gas-dev-bundle, with gas-lock and gas-error as peers
+
+### Changed
+
+- Load order is read from `gasDevConfig.loadOrder` instead of being duplicated in the test harness
+- `errors` now precedes `constants` in the documented `filePushOrder`, matching the order the tests have always used. No file depends on another at load time, so existing push orders keep working
+- Bumped gas-dev-config to ^1.4.1 (builds target ES2020) and gas-dev-release to ^1.1.0
+
+---
+
 ## [2.0.0] - 2026-10-28
 
 ### Added
