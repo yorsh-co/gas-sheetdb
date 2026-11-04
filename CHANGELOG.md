@@ -7,6 +7,8 @@
 ### Changed
 
 - README: cross-references use anchors that survive renumbering the steps
+- Raised the gas-lock and gas-error peer ranges to ^1.2.0, because gas-error 1.1.0 ships ES2021 `||=`, which Apps Script rejects on push; the vendored peer declarations already match gas-lock 1.2.1 and gas-error 1.2.2
+- Bumped gas-dev-config to ^1.8.0, and added `.claude/worktrees` and `.claude/plans` to `.prettierignore`
 
 ---
 
