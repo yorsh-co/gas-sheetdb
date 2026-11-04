@@ -8,6 +8,7 @@
 
 - Peer type declarations are synced with `gas-dev-config peers sync`; the `peers:check` script verifies them
 - Requires `gas-dev-config` `^1.10.0`
+- The peer declarations' usage header points consumers at `gas-dev-config peers sync` instead of a manual copy
 
 ---
 
