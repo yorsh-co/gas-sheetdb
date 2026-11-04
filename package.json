@@ -1,6 +1,6 @@
 {
   "name": "gas-sheetdb",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "Database-like storage layer for Google Apps Script projects.",
   "license": "MIT",
   "author": "Joshua Porter",
@@ -18,8 +18,8 @@
       "gas-sheetdb.class.js"
     ],
     "peers": {
-      "gas-lock": "^1.1.0",
-      "gas-error": "^1.1.0"
+      "gas-lock": "^1.2.0",
+      "gas-error": "^1.2.0"
     }
   }
 }
