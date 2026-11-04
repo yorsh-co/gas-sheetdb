@@ -1,6 +1,6 @@
 {
   "name": "gas-sheetdb",
-  "version": "2.1.4",
+  "version": "2.1.5",
   "private": true,
   "description": "Database-like storage layer for Google Apps Script projects.",
   "repository": {
@@ -14,7 +14,7 @@
     "homepage": "https://yorsh.co"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": "^22.13.0 || ^24.0.0 || >=26.0.0"
   },
   "type": "module",
   "prettier": "gas-dev-config/prettier",
@@ -47,16 +47,22 @@
     "@types/google-apps-script": "^2.0.11",
     "@types/node": "^22.20.5",
     "eslint": "^10.7.0",
-    "gas-dev-config": "github:yorsh-co/gas-dev-config#semver:^1.9.0",
-    "gas-dev-release": "github:yorsh-co/gas-dev-release#semver:^1.3.0",
+    "gas-dev-config": "github:yorsh-co/gas-dev-config#semver:^2.0.0",
+    "gas-dev-release": "github:yorsh-co/gas-dev-release#semver:^2.0.0",
     "prettier": "^3.9.6",
     "rimraf": "^6.1.3",
     "typescript": "^5.9.3",
     "vitest": "^5.0.3"
   },
+  "overrides": {
+    "minimatch": "^11.0.1",
+    "gaxios": "^7.3.1"
+  },
   "scripts": {
     "clean": "rimraf dist",
     "release": "gas-dev-release",
+    "peers:sync": "gas-dev-config peers sync",
+    "peers:check": "gas-dev-config peers sync --check",
     "build": "npm run clean && tsc",
     "build:format": "npm run check && npm run build && npm run format:dist",
     "build:watch": "tsc --watch",
