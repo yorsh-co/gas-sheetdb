@@ -4,10 +4,15 @@
 
 ## [Unreleased]
 
+---
+
+## [2.1.5] - 2026-11-04
+
 ### Changed
 
 - Peer type declarations are synced with `gas-dev-config peers sync`; the `peers:check` script verifies them
-- Requires `gas-dev-config` `^1.10.0`
+- Requires `gas-dev-config` `^2.0.0`
+- Requires `gas-dev-release` `^2.0.0`
 - The peer declarations' usage header points consumers at `gas-dev-config peers sync` instead of a manual copy
 
 ### Fixed

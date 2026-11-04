@@ -17,7 +17,7 @@
  * `gas-dev-config peers sync`, which writes it to `src/internal/`.
  *
  * @see https://github.com/yorsh-co/gas-sheetdb
- * @version 2.1.4
+ * @version 2.1.5
  */
 
 /** Row/column position config for a table's header and data rows. */
