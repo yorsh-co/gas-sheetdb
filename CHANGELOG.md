@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Requires `gas-dev-release` `^1.3.0`, whose release preflight checks that the peer declarations' `@version` header matches `package.json`
+
 ### Fixed
 
 - The peer declarations' `@version` header now matches the package version (2.1.3); the vendored gas-lock and gas-error peer declarations are re-copied from gas-lock 1.2.2 and gas-error 1.2.3
