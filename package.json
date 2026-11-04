@@ -29,8 +29,8 @@
       "gas-sheetdb.class.ts"
     ],
     "peers": {
-      "gas-lock": "^1.1.0",
-      "gas-error": "^1.1.0"
+      "gas-lock": "^1.2.0",
+      "gas-error": "^1.2.0"
     },
     "gasTest": {
       "scopes": [
