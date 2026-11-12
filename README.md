@@ -173,31 +173,33 @@ const sheetDb = new GasSheetDb({
 
 #### 1. Add the library to your Apps Script project
 
-##### Several gas-\* libraries: gas-dev-bundle
+##### Several gas-\* libraries: gasdev bundle
 
-[gas-dev-bundle](https://github.com/yorsh-co/gas-dev-bundle) resolves version ranges against the libraries' release tags and writes them into one script, in dependency order.
+[gasdev bundle](https://github.com/yorsh-co/gasdev#bundle) resolves version ranges against the libraries' release tags and writes them into one script, in dependency order.
 
 ```bash
-npm install -D github:yorsh-co/gas-dev-bundle#semver:^2.0.0
+npm install -D github:yorsh-co/gasdev#semver:^3.0.0
 ```
 
 List the libraries in your `package.json`:
 
 ```json
 {
-  "gasDevBundle": {
-    "outFile": "src/lib/gas-libraries.js",
-    "libraries": {
-      "gas-sheetdb": "^2.1.0",
-      "gas-lock": "^1.2.0",
-      "gas-error": "^1.2.0"
+  "gasdev": {
+    "bundle": {
+      "outFile": "src/lib/gas-libraries.js",
+      "libraries": {
+        "gas-sheetdb": "^2.1.0",
+        "gas-lock": "^1.2.0",
+        "gas-error": "^1.2.0"
+      }
     }
   }
 }
 ```
 
 ```bash
-npx gas-dev-bundle
+npx gasdev bundle
 ```
 
 - Commit the generated file. Its header records each library's version and commit SHA.
@@ -205,7 +207,7 @@ npx gas-dev-bundle
 - Requires `gas-sheetdb` >= 2.1.0, the first release that carries the load-order metadata.
 - Listing `gas-lock` or `gas-error` bundles it ahead of `gas-sheetdb`, which uses them when present.
 
-See the [gas-dev-bundle README](https://github.com/yorsh-co/gas-dev-bundle) for configuration details.
+See the [gasdev bundle documentation](https://github.com/yorsh-co/gasdev#bundle) for configuration details.
 
 ##### This library only: git subtree
 
@@ -237,7 +239,7 @@ This is required for declaring a `GasSheetDb` instance at runtime, as a global v
 
 See the [Configure the file push order](#file-push-order) section for details.
 
-With gas-dev-bundle, the single entry is the bundle file, e.g. `src/lib/gas-libraries.js` (adjusted for `rootDir`).
+With gasdev bundle, the single entry is the bundle file, e.g. `src/lib/gas-libraries.js` (adjusted for `rootDir`).
 
 #### 4. Declare a GasSheetDb instance with your configuration
 
@@ -296,7 +298,7 @@ clasp create --type sheets
 
 #### 5. Import `gas-sheetdb`
 
-To install several gas-\* libraries together, use the [gas-dev-bundle method](#add-the-library) from the Quick Start; otherwise, add this library with git subtree:
+To install several gas-\* libraries together, use the [gasdev bundle method](#add-the-library) from the Quick Start; otherwise, add this library with git subtree:
 
 ```bash
 git subtree add \
@@ -342,7 +344,7 @@ src/lib/gas-sheetdb/
 >
 > Alternatively, you can manually move these files to the top of the file list in the Apps Script editor.
 >
-> With gas-dev-bundle, the single entry is the bundle file, e.g. `src/lib/gas-libraries.js` (adjusted for `rootDir`).
+> With gasdev bundle, the single entry is the bundle file, e.g. `src/lib/gas-libraries.js` (adjusted for `rootDir`).
 >
 > Any file in your own project that constructs a `GasSheetDb` instance (e.g. `config = new GasSheetDb({ ... })`) must be pushed _after_ the entries above.
 
@@ -1051,7 +1053,7 @@ usersTable.deleteMany(usersToDelete);
 
 ### Peer Type Declarations
 
-Consuming gas-* libraries can type-check against `GasSheetDb` without vendoring its source. The canonical declarations live in `peer/gas-sheetdb.peer.types.d.ts` at every `vX.Y.Z` tag. A consuming package lists `"gas-sheetdb": "<range>"` under `gasDevConfig.peers` in its `package.json` and runs `gas-dev-config peers sync` (gas-dev-config 1.10.0 or later). It writes `src/internal/gas-sheetdb.peer.types.d.ts` from the highest tag that satisfies the range, and `gas-dev-config peers sync --check` reports a stale copy. Do not edit the copy.
+Consuming gas-* libraries can type-check against `GasSheetDb` without vendoring its source. The canonical declarations live in `peer/gas-sheetdb.peer.types.d.ts` at every `vX.Y.Z` tag. A consuming package lists `"gas-sheetdb": "<range>"` under `gasdev.peers` in its `package.json` and runs `gasdev peers sync`. It writes `src/internal/gas-sheetdb.peer.types.d.ts` from the highest tag that satisfies the range, and `gasdev peers sync --check` reports a stale copy. Do not edit the copy.
 
 ## Migrating to 2.0.0
 
@@ -1080,7 +1082,7 @@ Release builds are compiled to JavaScript before publishing so the distributed l
 
 ### Apps Script tests
 
-The Vitest suite runs against in-memory fakes of `SpreadsheetApp`, `LockService` and `Utilities`. `gas-test/gas-sheetdb.ts` checks the platform behaviour they stand in for in a real Apps Script execution: text storage through the apostrophe escape, the cell limit, nested locks with [GasLock](https://github.com/yorsh-co/gas-lock) and raw `LockService`, deleting every entry under frozen rows, and formula and `ARRAYFORMULA` columns. They are built and run with [gas-dev-config](https://github.com/yorsh-co/gas-dev-config#apps-script-tests)'s `gas-test`; see its README for the one-off setup.
+The Vitest suite runs against in-memory fakes of `SpreadsheetApp`, `LockService` and `Utilities`. `gas-test/gas-sheetdb.ts` checks the platform behaviour they stand in for in a real Apps Script execution: text storage through the apostrophe escape, the cell limit, nested locks with [GasLock](https://github.com/yorsh-co/gas-lock) and raw `LockService`, deleting every entry under frozen rows, and formula and `ARRAYFORMULA` columns. They are built and run with [gasdev](https://github.com/yorsh-co/gasdev#apps-script-tests)'s `gas-test`; see its README for the one-off setup.
 
 - `npm run test:gas:build` writes a single script, with gas-lock and [gas-error](https://github.com/yorsh-co/gas-error) bundled in; paste it into the Apps Script editor and run `runGasTests`.
 - `npm run test:gas` pushes it to a dedicated test project with clasp and prints the results. It needs `clasp login`, `GAS_TEST_SCRIPT_ID` and `GAS_TEST_SPREADSHEET_ID`; the project's contents are replaced, and the test sheets are deleted from the spreadsheet after the run.
