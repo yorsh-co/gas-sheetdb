@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+---
+
+## [2.1.6] - 2026-11-12
+
 ### Changed
 
 - README installs `gasdev` `^3.0.0` (`gasdev bundle`)

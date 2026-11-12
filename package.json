@@ -1,6 +1,6 @@
 {
   "name": "gas-sheetdb",
-  "version": "2.1.5",
+  "version": "2.1.6",
   "private": true,
   "description": "Database-like storage layer for Google Apps Script projects.",
   "repository": {
