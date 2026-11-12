@@ -1,11 +1,11 @@
 import { fileURLToPath } from 'node:url';
-import { createGasLoader, loadOrderFiles } from 'gas-dev-config/test';
+import { createGasLoader, loadOrderFiles } from 'gasdev/test';
 import { createMocks, type MockOptions, type Mocks } from './mocks';
 
 /** Repository root, against which `SOURCE_FILES` resolve. */
 export const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
-/** Source files in load order, from `gasDevConfig.loadOrder`. */
+/** Source files in load order, from `gasdev.loadOrder`. */
 export const SOURCE_FILES = loadOrderFiles(ROOT);
 
 const load = createGasLoader<{ GasSheetDb: typeof GasSheetDb }>({
