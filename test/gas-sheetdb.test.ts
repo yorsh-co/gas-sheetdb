@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createGasLoader } from 'gas-dev-config/test';
+import { createGasLoader } from 'gasdev/test';
 import { describe, expect, it, vi } from 'vitest';
 import { createMocks, FakeSpreadsheet } from './mocks';
 import {

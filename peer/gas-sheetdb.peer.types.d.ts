@@ -13,8 +13,8 @@
  * `include: ["src/**\/*.ts"]` but emits nothing, so no counterpart reaches
  * dist/ or the published package.
  *
- * Usage: list `gas-sheetdb` in `gasDevConfig.peers` and run
- * `gas-dev-config peers sync`, which writes it to `src/internal/`.
+ * Usage: list `gas-sheetdb` in `gasdev.peers` and run
+ * `gasdev peers sync`, which writes it to `src/internal/`.
  *
  * @see https://github.com/yorsh-co/gas-sheetdb
  * @version 2.1.5
