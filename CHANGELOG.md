@@ -6,6 +6,17 @@
 
 ---
 
+## [2.1.6] - 2026-11-12
+
+### Changed
+
+- README installs `gasdev` `^3.0.0` (`gasdev bundle`)
+- Tooling now requires `gasdev` `^3.0.0`, replacing `gas-dev-config` and `gas-dev-release`
+- `engines.node` minimum is now `^22.15.0`
+- The peer types header points at `gasdev peers sync`
+
+---
+
 ## [2.1.5] - 2026-11-04
 
 ### Changed
