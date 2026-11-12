@@ -4,3 +4,9 @@ node_modules/
 # dist
 dist/
 .worktrees/
+
+# Local agent state and secrets
+.claude/worktrees/
+.claude/plans/
+.claude/handoff/
+.env
